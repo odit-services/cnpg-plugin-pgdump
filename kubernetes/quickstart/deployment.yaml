@@ -51,6 +51,21 @@ spec:
           ports:
             - containerPort: 50051
               protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: 50051
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: 50051
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: 50051
+            periodSeconds: 10
+            failureThreshold: 2
           args:
             - plugin
             - --server-address=:50051
