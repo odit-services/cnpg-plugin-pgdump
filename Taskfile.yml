@@ -2,6 +2,8 @@ version: '3'
 
 vars:
   IMAGE: '{{.IMAGE | default "platform/cnpg-plugin-pgdump:latest"}}'
+  BIN_DIR: '{{.BIN_DIR | default ".bin"}}'
+  SHIKAI: '{{.BIN_DIR}}/shikai'
   VERSION:
     sh: git describe --tags --always --dirty 2>/dev/null || echo dev
 
@@ -24,3 +26,14 @@ tasks:
   docker-build:
     cmds:
       - docker build --build-arg VERSION={{.VERSION}} -t {{.IMAGE}} .
+  install-shikai:
+    status:
+      - test -x {{.SHIKAI}}
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - GOBIN=$PWD/{{.BIN_DIR}} go install github.com/nicolaiort/shikai@latest
+  release:
+    deps:
+      - install-shikai
+    cmds:
+      - '{{.SHIKAI}} {{.CLI_ARGS}}'
