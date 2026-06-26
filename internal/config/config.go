@@ -25,12 +25,23 @@ type Config struct {
 }
 
 type BackupConfig struct {
-	TargetType    string
-	Bucket        string
-	Path          string
-	RetentionDays int
-	EndpointURL   string
-	Region        string
+	TargetType            string
+	Bucket                string
+	Path                  string
+	RetentionDays         int
+	EndpointURL           string
+	Region                string
+	AccessKeyID           string
+	SecretAccessKey       string
+	AccessKeyIDSecret     SecretKeyRef
+	SecretAccessKeySecret SecretKeyRef
+	EndpointURLSecret     SecretKeyRef
+	RegionSecret          SecretKeyRef
+}
+
+type SecretKeyRef struct {
+	Name string
+	Key  string
 }
 
 func FromEnv(version string) Config {
@@ -73,12 +84,16 @@ func ParseBackupConfig(parameters map[string]string, defaults Config) (BackupCon
 	}
 
 	cfg := BackupConfig{
-		TargetType:    withDefault(parameters["target_type"], DefaultTargetType),
-		Bucket:        parameters["bucket"],
-		Path:          strings.Trim(parameters["path"], "/"),
-		RetentionDays: retention,
-		EndpointURL:   withDefault(parameters["endpoint_url"], defaults.S3Endpoint),
-		Region:        withDefault(parameters["region"], defaults.S3Region),
+		TargetType:            withDefault(parameters["target_type"], DefaultTargetType),
+		Bucket:                parameters["bucket"],
+		Path:                  strings.Trim(parameters["path"], "/"),
+		RetentionDays:         retention,
+		EndpointURL:           withDefault(parameters["endpoint_url"], defaults.S3Endpoint),
+		Region:                withDefault(parameters["region"], defaults.S3Region),
+		AccessKeyIDSecret:     secretRef(parameters, "access_key_id_secret", "access-key-id"),
+		SecretAccessKeySecret: secretRef(parameters, "secret_access_key_secret", "secret-access-key"),
+		EndpointURLSecret:     secretRef(parameters, "endpoint_url_secret", "endpoint"),
+		RegionSecret:          secretRef(parameters, "region_secret", "region"),
 	}
 
 	if cfg.TargetType != DefaultTargetType {
@@ -89,6 +104,13 @@ func ParseBackupConfig(parameters map[string]string, defaults Config) (BackupCon
 	}
 
 	return cfg, nil
+}
+
+func secretRef(parameters map[string]string, prefix, defaultKey string) SecretKeyRef {
+	return SecretKeyRef{
+		Name: parameters[prefix+"_name"],
+		Key:  withDefault(parameters[prefix+"_key"], defaultKey),
+	}
 }
 
 type parameterError string

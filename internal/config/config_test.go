@@ -24,3 +24,30 @@ func TestParseBackupConfigRequiresBucket(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestParseBackupConfigSecretRefs(t *testing.T) {
+	cfg, err := ParseBackupConfig(map[string]string{
+		"bucket":                        "team-backups",
+		"access_key_id_secret_name":     "backup-s3-credentials",
+		"secret_access_key_secret_name": "backup-s3-credentials",
+		"endpoint_url_secret_name":      "backup-s3-credentials",
+		"endpoint_url_secret_key":       "custom-endpoint",
+		"region_secret_name":            "backup-s3-credentials",
+	}, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.AccessKeyIDSecret.Name != "backup-s3-credentials" || cfg.AccessKeyIDSecret.Key != "access-key-id" {
+		t.Fatalf("access key secret ref %#v", cfg.AccessKeyIDSecret)
+	}
+	if cfg.SecretAccessKeySecret.Name != "backup-s3-credentials" || cfg.SecretAccessKeySecret.Key != "secret-access-key" {
+		t.Fatalf("secret key secret ref %#v", cfg.SecretAccessKeySecret)
+	}
+	if cfg.EndpointURLSecret.Name != "backup-s3-credentials" || cfg.EndpointURLSecret.Key != "custom-endpoint" {
+		t.Fatalf("endpoint secret ref %#v", cfg.EndpointURLSecret)
+	}
+	if cfg.RegionSecret.Name != "backup-s3-credentials" || cfg.RegionSecret.Key != "region" {
+		t.Fatalf("region secret ref %#v", cfg.RegionSecret)
+	}
+}

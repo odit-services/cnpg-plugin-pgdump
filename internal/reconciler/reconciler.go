@@ -97,7 +97,7 @@ func (s *Server) runBackup(ctx context.Context, cluster cnpgv1.Cluster, backup c
 	}
 
 	conn := pgbackup.Connection{
-		Host:     fmt.Sprintf("%s-rw.%s.svc", cluster.Name, cluster.Namespace),
+		Host:     fmt.Sprintf("%s-r.%s.svc", cluster.Name, cluster.Namespace),
 		Port:     5432,
 		User:     user,
 		Password: password,
@@ -109,6 +109,11 @@ func (s *Server) runBackup(ctx context.Context, cluster cnpgv1.Cluster, backup c
 	}
 	if len(databases) == 0 {
 		return result, fmt.Errorf("no dumpable databases found")
+	}
+
+	backupConfig, err = s.resolveS3Secrets(ctx, cluster.Namespace, backupConfig)
+	if err != nil {
+		return result, err
 	}
 
 	uploader, err := pgbackup.NewS3Uploader(ctx, backupConfig, s.appConfig)
@@ -144,6 +149,47 @@ func (s *Server) runBackup(ctx context.Context, cluster cnpgv1.Cluster, backup c
 
 	result.StoppedAt = time.Now().UTC()
 	return result, nil
+}
+
+func (s *Server) resolveS3Secrets(ctx context.Context, namespace string, backupConfig config.BackupConfig) (config.BackupConfig, error) {
+	var err error
+	backupConfig.AccessKeyID, err = s.secretValue(ctx, namespace, backupConfig.AccessKeyIDSecret)
+	if err != nil {
+		return backupConfig, err
+	}
+	backupConfig.SecretAccessKey, err = s.secretValue(ctx, namespace, backupConfig.SecretAccessKeySecret)
+	if err != nil {
+		return backupConfig, err
+	}
+	if value, err := s.secretValue(ctx, namespace, backupConfig.EndpointURLSecret); err != nil {
+		return backupConfig, err
+	} else if value != "" {
+		backupConfig.EndpointURL = value
+	}
+	if value, err := s.secretValue(ctx, namespace, backupConfig.RegionSecret); err != nil {
+		return backupConfig, err
+	} else if value != "" {
+		backupConfig.Region = value
+	}
+	return backupConfig, nil
+}
+
+func (s *Server) secretValue(ctx context.Context, namespace string, ref config.SecretKeyRef) (string, error) {
+	if ref.Name == "" {
+		return "", nil
+	}
+	if s.kube == nil {
+		return "", fmt.Errorf("kubernetes client is not configured")
+	}
+	secret, err := s.kube.CoreV1().Secrets(namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	value, ok := secret.Data[ref.Key]
+	if !ok {
+		return "", fmt.Errorf("secret %s/%s is missing key %s", namespace, ref.Name, ref.Key)
+	}
+	return string(value), nil
 }
 
 func (s *Server) readApplicationSecret(ctx context.Context, namespace, clusterName string) (password, user string, err error) {

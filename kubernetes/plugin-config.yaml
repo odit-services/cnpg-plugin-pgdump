@@ -11,6 +11,18 @@ spec:
   storage:
     size: 10Gi
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: logical-backup-s3
+  namespace: default
+type: Opaque
+stringData:
+  endpoint: https://minio.platform.svc:9000
+  access-key-id: change-me
+  secret-access-key: change-me
+  region: us-east-1
+---
 apiVersion: postgresql.cnpg.io/v1
 kind: ScheduledBackup
 metadata:
@@ -26,7 +38,9 @@ spec:
       bucket: team-backups
       path: logical
       retention_days: "30"
-      endpoint_url: https://minio.platform.svc:9000
-      region: us-east-1
+      endpoint_url_secret_name: logical-backup-s3
+      region_secret_name: logical-backup-s3
+      access_key_id_secret_name: logical-backup-s3
+      secret_access_key_secret_name: logical-backup-s3
   cluster:
     name: my-app-db

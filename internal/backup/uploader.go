@@ -34,10 +34,12 @@ func NewS3Uploader(ctx context.Context, backupConfig config.BackupConfig, appCon
 	options := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(backupConfig.Region),
 	}
-	if appConfig.S3AccessKeyID != "" || appConfig.S3SecretAccessKey != "" {
+	accessKeyID := withDefault(backupConfig.AccessKeyID, appConfig.S3AccessKeyID)
+	secretAccessKey := withDefault(backupConfig.SecretAccessKey, appConfig.S3SecretAccessKey)
+	if accessKeyID != "" || secretAccessKey != "" {
 		options = append(options, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			appConfig.S3AccessKeyID,
-			appConfig.S3SecretAccessKey,
+			accessKeyID,
+			secretAccessKey,
 			"",
 		)))
 	}
@@ -55,6 +57,13 @@ func NewS3Uploader(ctx context.Context, backupConfig config.BackupConfig, appCon
 	})
 
 	return &S3Uploader{bucket: backupConfig.Bucket, client: client}, nil
+}
+
+func withDefault(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func (u *S3Uploader) Upload(ctx context.Context, localPath, key string) (int64, error) {

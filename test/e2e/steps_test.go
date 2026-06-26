@@ -394,6 +394,18 @@ kind: Namespace
 metadata:
   name: %[1]s
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backup-s3-credentials
+  namespace: %[1]s
+type: Opaque
+stringData:
+  endpoint: %[4]s
+  access-key-id: %[2]s
+  secret-access-key: %[3]s
+  region: us-east-1
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -448,7 +460,7 @@ spec:
     - name: console
       port: 9001
       targetPort: 9001
-`, e2eNamespace, rustFSAccessKey, rustFSSecretKey)
+`, e2eNamespace, rustFSAccessKey, rustFSSecretKey, rustFSEndpoint)
 }
 
 func (s *suiteState) pluginManifest() (string, error) {
@@ -465,19 +477,6 @@ func (s *suiteState) pluginManifest() (string, error) {
 		return "", err
 	}
 	manifest = tlsManifest + manifest
-	manifest += fmt.Sprintf(`
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: backup-s3-credentials
-  namespace: cnpg-system
-type: Opaque
-stringData:
-  endpoint: %s
-  access-key-id: %s
-  secret-access-key: %s
-`, rustFSEndpoint, rustFSAccessKey, rustFSSecretKey)
 	return manifest, nil
 }
 
@@ -634,8 +633,11 @@ spec:
       bucket: %[3]s
       path: logical
       retention_days: "30"
-      endpoint_url: %[4]s
-      region: us-east-1
+      endpoint_url_secret_name: backup-s3-credentials
+      endpoint_url_secret_key: endpoint
+      region_secret_name: backup-s3-credentials
+      access_key_id_secret_name: backup-s3-credentials
+      secret_access_key_secret_name: backup-s3-credentials
   cluster:
     name: %[5]s
 `, name, e2eNamespace, rustFSBucket, rustFSEndpoint, cluster)
