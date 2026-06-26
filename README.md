@@ -12,13 +12,41 @@ make test
 make docker-build IMAGE=platform/cnpg-plugin-pgdump:latest
 ```
 
+## E2E Tests
+
+The Cucumber/Godog E2E suite creates a Kind cluster, installs CloudNativePG, runs RustFS as the S3 target, deploys the plugin image, and triggers a CNPG `ScheduledBackup` for each configured PostgreSQL major version.
+
+Required local CLIs:
+
+- `docker`
+- `kind`
+- `kubectl`
+
+Run for one version:
+
+```sh
+make e2e POSTGRES_VERSIONS=16
+```
+
+Run for multiple versions:
+
+```sh
+make e2e POSTGRES_VERSIONS=14,15,16,17
+```
+
+Equivalent direct command:
+
+```sh
+go test -tags=e2e ./test/e2e -count=1 -timeout=45m -postgres-versions="14,15,16,17"
+```
+
 ## Runtime
 
 The image is based on `postgres:16-alpine`, so it includes `pg_dump` 16. This is the pragmatic v1 approach; exact client/server version extraction from the cluster image is not implemented.
 
 Configuration can be set with flags or environment variables:
 
-- `--listen-address`, e.g. `unix:///plugins` or `:50051`
+- `--listen-address`, e.g. `:50051` for TCP or `unix:///plugins` for same-pod socket setups
 - `S3_ENDPOINT` / `--s3-endpoint`
 - `S3_REGION` / `--s3-region`
 - `S3_ACCESS_KEY_ID` / `--s3-access-key-id`

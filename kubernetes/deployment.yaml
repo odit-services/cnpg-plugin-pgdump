@@ -50,7 +50,7 @@ spec:
           image: platform/cnpg-plugin-pgdump:latest
           args:
             - plugin
-            - --listen-address=unix:///plugins
+            - --listen-address=:50051
           env:
             - name: S3_ENDPOINT
               valueFrom:
@@ -73,13 +73,9 @@ spec:
             - name: S3_REGION
               value: us-east-1
           volumeMounts:
-            - name: socket-dir
-              mountPath: /plugins
             - name: tmp
               mountPath: /tmp
       volumes:
-        - name: socket-dir
-          emptyDir: {}
         - name: tmp
           emptyDir: {}
 ---

@@ -12,6 +12,11 @@ tasks:
   test:
     cmds:
       - go test ./...
+  e2e:
+    vars:
+      POSTGRES_VERSIONS: '{{.POSTGRES_VERSIONS | default "16"}}'
+    cmds:
+      - go test -tags=e2e ./test/e2e -count=1 -timeout=45m -postgres-versions="{{.POSTGRES_VERSIONS}}"
   fmt:
     cmds:
       - gofmt -w .
