@@ -306,9 +306,37 @@ Configuration can be set with flags or environment variables:
 
 S3 configuration belongs to the `ScheduledBackup`. The plugin does not read S3 settings from Deployment environment variables.
 
+## Backup (On-Demand)
+
+A one-time ad-hoc backup uses the standard CNPG `Backup` resource with `method: plugin`:
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: Backup
+metadata:
+  name: logical-manual-backup
+spec:
+  method: plugin
+  pluginConfiguration:
+    name: pgdump-backup.cloudnative-pg.io
+    parameters:
+      target_type: s3
+      bucket: team-backups
+      path: logical
+      retention_days: "30"
+      endpoint_url_secret_name: logical-backup-s3
+      region_secret_name: logical-backup-s3
+      access_key_id_secret_name: logical-backup-s3
+      secret_access_key_secret_name: logical-backup-s3
+  cluster:
+    name: my-app-db
+```
+
+The S3 secret and cluster plugin config from the quickstart apply here as well.
+
 ## ScheduledBackup
 
-Use the standard CNPG `ScheduledBackup` with `method: plugin`:
+For recurring backups use the standard CNPG `ScheduledBackup` with `method: plugin`:
 
 ```yaml
 apiVersion: v1
