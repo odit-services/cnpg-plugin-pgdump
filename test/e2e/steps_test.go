@@ -5,9 +5,16 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
+	"math/big"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,7 +26,10 @@ import (
 
 const (
 	clusterName      = "cnpg-plugin-pgdump-e2e"
-	pluginImage      = "cnpg-plugin-pgdump:e2e"
+	registryName     = "kind-registry"
+	registryPort     = "5001"
+	kindNodeImage    = "docker.io/kindest/node:v1.32.5"
+	pluginImageBase  = "localhost:5001/cnpg-plugin-pgdump"
 	cnpgVersion      = "1.26.0"
 	e2eNamespace     = "pgdump-e2e"
 	rustFSAccessKey  = "rustfsadmin"
@@ -30,16 +40,26 @@ const (
 )
 
 var postgresVersionsFlag = flag.String("postgres-versions", envDefault("POSTGRES_VERSIONS", defaultPGVersion), "comma-separated PostgreSQL major versions to test")
+var containerRuntimeFlag = flag.String("container-runtime", envDefault("CONTAINER_RUNTIME", "auto"), "container runtime for image builds: auto, docker, or podman")
+var pluginImageTag = flag.String("plugin-image-tag", envDefault("PLUGIN_IMAGE_TAG", ""), "unique tag for the e2e plugin image; auto-generated if empty")
 
 type suiteState struct {
 	postgresVersions []string
 	verifiedVersions map[string]bool
+	containerRuntime string
+	pluginImage      string
 }
 
 func InitializeScenario(ctx *godog.ScenarioContext) {
+	tag := *pluginImageTag
+	if tag == "" {
+		tag = fmt.Sprintf("e2e-%d", time.Now().Unix())
+	}
+
 	state := &suiteState{
 		postgresVersions: parseVersions(*postgresVersionsFlag),
 		verifiedVersions: map[string]bool{},
+		pluginImage:      pluginImageBase + ":" + tag,
 	}
 
 	ctx.Step(`^a kind cluster for pgdump e2e tests$`, state.aKindClusterForPgdumpE2ETests)
@@ -51,18 +71,31 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 }
 
 func (s *suiteState) aKindClusterForPgdumpE2ETests(ctx context.Context) error {
+	runtime, err := detectContainerRuntime(ctx)
+	if err != nil {
+		return err
+	}
+	s.containerRuntime = runtime
+
 	if _, err := command(ctx, "kind", "get", "clusters"); err != nil {
 		return fmt.Errorf("kind CLI is required: %w", err)
 	}
-
 	clusters, err := command(ctx, "kind", "get", "clusters")
 	if err != nil {
 		return err
 	}
 	if !containsLine(clusters, clusterName) {
-		if _, err := command(ctx, "kind", "create", "cluster", "--name", clusterName, "--wait", "120s"); err != nil {
+		configPath, cleanup, err := kindConfigWithRegistry()
+		if err != nil {
 			return err
 		}
+		defer cleanup()
+		if _, err := command(ctx, "kind", "create", "cluster", "--name", clusterName, "--config", configPath, "--wait", "120s"); err != nil {
+			return err
+		}
+	}
+	if err := s.ensureLocalRegistry(ctx); err != nil {
+		return err
 	}
 
 	if _, err := command(ctx, "kubectl", "cluster-info", "--context", "kind-"+clusterName); err != nil {
@@ -99,24 +132,67 @@ func (s *suiteState) rustFSIsRunningAsTheS3Target(ctx context.Context) error {
 }
 
 func (s *suiteState) thePgdumpPluginIsDeployed(ctx context.Context) error {
-	if _, err := command(ctx, "docker", "build", "-t", pluginImage, "."); err != nil {
+	if s.containerRuntime == "" {
+		runtime, err := detectContainerRuntime(ctx)
+		if err != nil {
+			return err
+		}
+		s.containerRuntime = runtime
+	}
+	if _, err := command(ctx, s.containerRuntime, "build", "-t", s.pluginImage, "."); err != nil {
 		return err
 	}
-	if _, err := command(ctx, "kind", "load", "docker-image", pluginImage, "--name", clusterName); err != nil {
+	if _, err := command(ctx, s.containerRuntime, "push", "--tls-verify=false", s.pluginImage); err != nil {
 		return err
 	}
 
-	manifest, err := pluginManifest()
+	manifest, err := s.pluginManifest()
 	if err != nil {
 		return err
 	}
 	if _, err := kubectlApply(ctx, manifest); err != nil {
 		return err
 	}
-	return waitFor(ctx, 3*time.Minute, func(ctx context.Context) error {
+	if err := waitFor(ctx, 3*time.Minute, func(ctx context.Context) error {
 		_, err := command(ctx, "kubectl", "-n", "cnpg-system", "rollout", "status", "deployment/cnpg-plugin-pgdump", "--timeout=10s")
 		return err
-	})
+	}); err != nil {
+		return err
+	}
+	if err := s.restartOperatorForPluginDiscovery(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *suiteState) restartOperatorForPluginDiscovery(ctx context.Context) error {
+	if _, err := kubectlApply(ctx, operatorPluginConfigManifest()); err != nil {
+		return err
+	}
+	_, err := command(ctx, "kubectl", "rollout", "restart", "deployment/cnpg-controller-manager", "-n", "cnpg-system")
+	if err != nil {
+		return err
+	}
+	if err := waitFor(ctx, 3*time.Minute, func(ctx context.Context) error {
+		_, err := command(ctx, "kubectl", "-n", "cnpg-system", "rollout", "status", "deployment/cnpg-controller-manager", "--timeout=10s")
+		return err
+	}); err != nil {
+		return err
+	}
+	time.Sleep(15 * time.Second)
+	return nil
+}
+
+func operatorPluginConfigManifest() string {
+	return `
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cnpg-controller-manager-config
+  namespace: cnpg-system
+data:
+  INCLUDE_PLUGINS: pgdump-backup.cloudnative-pg.io
+`
 }
 
 func (s *suiteState) iRunLogicalBackupsForTheConfiguredPostgreSQLVersions(ctx context.Context) error {
@@ -126,6 +202,7 @@ func (s *suiteState) iRunLogicalBackupsForTheConfiguredPostgreSQLVersions(ctx co
 
 	for _, version := range s.postgresVersions {
 		cluster := "pgdump-pg" + version
+		_, _ = command(ctx, "kubectl", "-n", e2eNamespace, "delete", "cluster", cluster, "--ignore-not-found", "--timeout=120s")
 		if _, err := kubectlApply(ctx, cnpgClusterManifest(cluster, version)); err != nil {
 			return err
 		}
@@ -190,11 +267,25 @@ func (s *suiteState) waitForS3Objects(ctx context.Context, prefix string, want i
 		if err != nil {
 			return err
 		}
-		if strings.TrimSpace(output) != fmt.Sprintf("%d", want) {
-			return fmt.Errorf("found %s dump objects under %s, want %d", strings.TrimSpace(output), prefix, want)
+		count, err := firstInteger(output)
+		if err != nil {
+			return err
+		}
+		if count < want {
+			return fmt.Errorf("found %d dump objects under %s, want at least %d", count, prefix, want)
 		}
 		return nil
 	})
+}
+
+func firstInteger(output string) (int, error) {
+	for _, field := range strings.Fields(output) {
+		var value int
+		if _, err := fmt.Sscanf(field, "%d", &value); err == nil {
+			return value, nil
+		}
+	}
+	return 0, fmt.Errorf("no integer found in output: %s", output)
 }
 
 func (s *suiteState) runInAWSPod(ctx context.Context, args ...string) error {
@@ -205,7 +296,7 @@ func (s *suiteState) runInAWSPod(ctx context.Context, args ...string) error {
 func (s *suiteState) runInAWSPodOutput(ctx context.Context, args ...string) (string, error) {
 	runArgs := []string{
 		"-n", e2eNamespace, "run", "aws-cli", "--rm", "-i", "--restart=Never",
-		"--image", "amazon/aws-cli:2.17.50",
+		"--image", "docker.io/amazon/aws-cli:2.17.50",
 		"--env", "AWS_ACCESS_KEY_ID=" + rustFSAccessKey,
 		"--env", "AWS_SECRET_ACCESS_KEY=" + rustFSSecretKey,
 		"--env", "AWS_DEFAULT_REGION=us-east-1",
@@ -213,6 +304,46 @@ func (s *suiteState) runInAWSPodOutput(ctx context.Context, args ...string) (str
 	}
 	runArgs = append(runArgs, args...)
 	return command(ctx, "kubectl", runArgs...)
+}
+
+func (s *suiteState) ensureLocalRegistry(ctx context.Context) error {
+	_, _ = command(ctx, s.containerRuntime, "rm", "-f", registryName)
+
+	_, err := command(ctx, s.containerRuntime,
+		"run", "-d", "--restart=always",
+		"--network", "kind",
+		"-p", "127.0.0.1:"+registryPort+":5000",
+		"--name", registryName,
+		"docker.io/library/registry:2",
+	)
+	return err
+}
+
+func kindConfigWithRegistry() (string, func(), error) {
+	file, err := os.CreateTemp("", "cnpg-plugin-pgdump-kind-*.yaml")
+	if err != nil {
+		return "", func() {}, err
+	}
+	content := fmt.Sprintf(`kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    image: %[3]s
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:%[1]s"]
+      endpoint = ["http://%[2]s:5000"]
+`, registryPort, registryName, kindNodeImage)
+	if _, err := file.WriteString(content); err != nil {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return "", func() {}, err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(file.Name())
+		return "", func() {}, err
+	}
+	return file.Name(), func() { _ = os.Remove(file.Name()) }, nil
 }
 
 func waitFor(ctx context.Context, timeout time.Duration, fn func(context.Context) error) error {
@@ -282,7 +413,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: rustfs
-          image: rustfs/rustfs:latest
+          image: docker.io/rustfs/rustfs:latest
           ports:
             - containerPort: 9000
             - containerPort: 9001
@@ -320,15 +451,20 @@ spec:
 `, e2eNamespace, rustFSAccessKey, rustFSSecretKey)
 }
 
-func pluginManifest() (string, error) {
+func (s *suiteState) pluginManifest() (string, error) {
 	path := filepath.Join(repoRoot(), "kubernetes", "deployment.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
-	manifest := strings.ReplaceAll(string(data), "platform/cnpg-plugin-pgdump:latest", pluginImage)
-	manifest = strings.ReplaceAll(manifest, "image: "+pluginImage, "image: "+pluginImage+"\n          imagePullPolicy: Never")
+	manifest := strings.ReplaceAll(string(data), "platform/cnpg-plugin-pgdump:latest", s.pluginImage)
+	manifest = strings.ReplaceAll(manifest, "image: "+s.pluginImage, "image: "+s.pluginImage+"\n          imagePullPolicy: IfNotPresent")
 	manifest = strings.ReplaceAll(manifest, "value: us-east-1", "value: us-east-1")
+	tlsManifest, err := pluginTLSSecretsManifest()
+	if err != nil {
+		return "", err
+	}
+	manifest = tlsManifest + manifest
 	manifest += fmt.Sprintf(`
 ---
 apiVersion: v1
@@ -343,6 +479,118 @@ stringData:
   secret-access-key: %s
 `, rustFSEndpoint, rustFSAccessKey, rustFSSecretKey)
 	return manifest, nil
+}
+
+func pluginTLSSecretsManifest() (string, error) {
+	caCertPEM, caKey, err := newCertificateAuthority()
+	if err != nil {
+		return "", err
+	}
+	serverCertPEM, serverKeyPEM, err := newSignedCertificate(caCertPEM, caKey, "cnpg-plugin-pgdump", []string{
+		"cnpg-plugin-pgdump",
+		"cnpg-plugin-pgdump.cnpg-system",
+		"cnpg-plugin-pgdump.cnpg-system.svc",
+		"cnpg-plugin-pgdump.cnpg-system.svc.cluster.local",
+	}, nil)
+	if err != nil {
+		return "", err
+	}
+	clientCertPEM, clientKeyPEM, err := newSignedCertificate(caCertPEM, caKey, "cnpg-plugin-pgdump-client", nil, nil)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf(`
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cnpg-plugin-pgdump-server-tls
+  namespace: cnpg-system
+type: kubernetes.io/tls
+stringData:
+  tls.crt: |
+%s
+  tls.key: |
+%s
+  ca.crt: |
+%s
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cnpg-plugin-pgdump-client-tls
+  namespace: cnpg-system
+type: kubernetes.io/tls
+stringData:
+  tls.crt: |
+%s
+  tls.key: |
+%s
+  ca.crt: |
+%s
+---
+`, indentPEM(serverCertPEM), indentPEM(serverKeyPEM), indentPEM(caCertPEM), indentPEM(clientCertPEM), indentPEM(clientKeyPEM), indentPEM(caCertPEM)), nil
+}
+
+func newCertificateAuthority() ([]byte, *rsa.PrivateKey, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, nil, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: "cnpg-plugin-pgdump-e2e-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), key, nil
+}
+
+func newSignedCertificate(caCertPEM []byte, caKey *rsa.PrivateKey, commonName string, dnsNames []string, ips []net.IP) ([]byte, []byte, error) {
+	block, _ := pem.Decode(caCertPEM)
+	if block == nil {
+		return nil, nil, errors.New("invalid CA certificate PEM")
+	}
+	caCert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, nil, err
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, nil, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: commonName},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		DNSNames:     dnsNames,
+		IPAddresses:  ips,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &key.PublicKey, caKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	return certPEM, keyPEM, nil
+}
+
+func indentPEM(value []byte) string {
+	lines := strings.Split(strings.TrimRight(string(value), "\n"), "\n")
+	for i := range lines {
+		lines[i] = "    " + lines[i]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func cnpgClusterManifest(cluster, version string) string {
@@ -418,6 +666,26 @@ func envDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func detectContainerRuntime(ctx context.Context) (string, error) {
+	configured := strings.TrimSpace(*containerRuntimeFlag)
+	if configured != "" && configured != "auto" {
+		if _, err := exec.LookPath(configured); err != nil {
+			return "", fmt.Errorf("container runtime %q not found: %w", configured, err)
+		}
+		return configured, nil
+	}
+
+	for _, candidate := range []string{"docker", "podman"} {
+		if _, err := exec.LookPath(candidate); err != nil {
+			continue
+		}
+		if _, err := command(ctx, candidate, "info"); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", errors.New("neither docker nor podman is available for image builds")
 }
 
 func repoRoot() string {

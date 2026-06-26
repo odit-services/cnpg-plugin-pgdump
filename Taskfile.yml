@@ -15,8 +15,9 @@ tasks:
   e2e:
     vars:
       POSTGRES_VERSIONS: '{{.POSTGRES_VERSIONS | default "16"}}'
+      CONTAINER_RUNTIME: '{{.CONTAINER_RUNTIME | default "auto"}}'
     cmds:
-      - go test -tags=e2e ./test/e2e -count=1 -timeout=45m -postgres-versions="{{.POSTGRES_VERSIONS}}"
+      - go test -tags=e2e ./test/e2e -count=1 -timeout=45m -postgres-versions="{{.POSTGRES_VERSIONS}}" -container-runtime="{{.CONTAINER_RUNTIME}}"
   fmt:
     cmds:
       - gofmt -w .

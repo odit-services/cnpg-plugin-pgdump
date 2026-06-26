@@ -18,9 +18,11 @@ The Cucumber/Godog E2E suite creates a Kind cluster, installs CloudNativePG, run
 
 Required local CLIs:
 
-- `docker`
+- `docker` or `podman`
 - `kind`
 - `kubectl`
+
+The suite uses the Kind local-registry pattern on `localhost:5001` to make the locally built plugin image available to the cluster.
 
 Run for one version:
 

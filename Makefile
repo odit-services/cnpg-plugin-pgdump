@@ -11,7 +11,7 @@ test:
 	go test ./...
 
 e2e:
-	go test -tags=e2e ./test/e2e -count=1 -timeout=45m -postgres-versions="$(POSTGRES_VERSIONS)"
+	go test -tags=e2e ./test/e2e -count=1 -timeout=45m -postgres-versions="$(POSTGRES_VERSIONS)" -container-runtime="$(CONTAINER_RUNTIME)"
 
 fmt:
 	gofmt -w .
