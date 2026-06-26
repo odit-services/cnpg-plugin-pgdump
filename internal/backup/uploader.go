@@ -127,11 +127,20 @@ func renderObjectKeyTemplate(template, namespace, cluster, database, backupID st
 		"{cluster}":   cluster,
 		"{database}":  database,
 		"{backup_id}": backupID,
+		"{timestamp}": backupTimestamp(backupID),
 	}
 	for placeholder, value := range replacements {
 		template = strings.ReplaceAll(template, placeholder, value)
 	}
 	return template
+}
+
+func backupTimestamp(backupID string) string {
+	backupID = strings.TrimSpace(backupID)
+	if lastDash := strings.LastIndex(backupID, "-"); lastDash >= 0 && lastDash < len(backupID)-1 {
+		return backupID[lastDash+1:]
+	}
+	return backupID
 }
 
 func cleanKey(key string) string {

@@ -122,6 +122,7 @@ Secret ref parameter defaults:
 - `{cluster}`
 - `{database}`
 - `{backup_id}`
+- `{timestamp}`
 
 The template must include `{database}` and `{backup_id}` to avoid overwriting dumps. For a bucket dedicated to one CNPG cluster, a compact layout can be:
 
@@ -129,7 +130,7 @@ The template must include `{database}` and `{backup_id}` to avoid overwriting du
 parameters:
   bucket: my-app-db-backups
   path: logical
-  object_key_template: "{database}/{backup_id}.dump"
+  object_key_template: "{database}/{timestamp}/{backup_id}.dump"
 ```
 
 Object keys are written as:
