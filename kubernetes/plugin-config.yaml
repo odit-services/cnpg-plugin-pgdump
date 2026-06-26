@@ -40,8 +40,12 @@ spec:
       object_key_template: "{namespace}/{cluster}/{database}/{backup_id}.dump"
       retention_days: "30"
       endpoint_url_secret_name: logical-backup-s3
+      endpoint_url_secret_key: endpoint
       region_secret_name: logical-backup-s3
+      region_secret_key: region
       access_key_id_secret_name: logical-backup-s3
+      access_key_id_secret_key: access-key-id
       secret_access_key_secret_name: logical-backup-s3
+      secret_access_key_secret_key: secret-access-key
   cluster:
     name: my-app-db

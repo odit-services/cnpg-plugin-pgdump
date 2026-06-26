@@ -637,8 +637,11 @@ spec:
       endpoint_url_secret_name: backup-s3-credentials
       endpoint_url_secret_key: endpoint
       region_secret_name: backup-s3-credentials
+      region_secret_key: region
       access_key_id_secret_name: backup-s3-credentials
+      access_key_id_secret_key: access-key-id
       secret_access_key_secret_name: backup-s3-credentials
+      secret_access_key_secret_key: secret-access-key
   cluster:
     name: %[5]s
 `, name, e2eNamespace, rustFSBucket, rustFSEndpoint, cluster)
