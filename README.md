@@ -4,6 +4,84 @@ CNPG-I plugin for CloudNativePG v1.26+ that performs logical PostgreSQL backups 
 
 The plugin uses `ReconcilerHooks.Pre` for `Backup` reconciliation. On success it returns `BEHAVIOR_TERMINATE`, so the CNPG operator skips its physical backup flow. On failure it logs/stores the error and returns `BEHAVIOR_CONTINUE`.
 
+## Quickstart
+
+Prerequisites:
+
+- CloudNativePG v1.26+ is installed.
+- The CNPG operator is configured to load `pgdump-backup.cloudnative-pg.io` via `INCLUDE_PLUGINS`.
+- CNPG-I plugin TLS Secrets referenced by `kubernetes/deployment.yaml` exist in `cnpg-system`.
+- An S3-compatible bucket exists.
+
+Deploy the plugin from GHCR:
+
+```sh
+kubectl apply -f https://raw.githubusercontent.com/odit-services/cnpg-plugin-pgdump/main/kubernetes/deployment.yaml
+kubectl -n cnpg-system set image deployment/cnpg-plugin-pgdump plugin=ghcr.io/odit-services/cnpg-plugin-pgdump:main
+```
+
+Use a SemVer tag instead of `main` for production, for example `ghcr.io/odit-services/cnpg-plugin-pgdump:1.2.3`. The GitHub Actions workflow publishes branch, SemVer, and SHA tags to GHCR.
+
+Enable the plugin on a CNPG cluster:
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: my-app-db
+spec:
+  instances: 3
+  plugins:
+    - name: pgdump-backup.cloudnative-pg.io
+      enabled: true
+  storage:
+    size: 10Gi
+```
+
+Create S3 credentials and schedule a logical backup:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: logical-backup-s3
+type: Opaque
+stringData:
+  endpoint: https://minio.platform.svc:9000
+  access-key-id: minio
+  secret-access-key: minio123
+  region: us-east-1
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: logical-daily-backup
+spec:
+  schedule: "0 0 2 * * *"
+  method: plugin
+  pluginConfiguration:
+    name: pgdump-backup.cloudnative-pg.io
+    parameters:
+      target_type: s3
+      bucket: team-backups
+      path: logical
+      retention_days: "30"
+      endpoint_url_secret_name: logical-backup-s3
+      region_secret_name: logical-backup-s3
+      access_key_id_secret_name: logical-backup-s3
+      secret_access_key_secret_name: logical-backup-s3
+  cluster:
+    name: my-app-db
+```
+
+Check status:
+
+```sh
+kubectl get scheduledbackup logical-daily-backup
+kubectl get backup -l cnpg.io/scheduled-backup=logical-daily-backup
+kubectl -n cnpg-system logs deployment/cnpg-plugin-pgdump
+```
+
 ## Build
 
 Using `make`:
