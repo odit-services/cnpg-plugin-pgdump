@@ -52,10 +52,16 @@ Run for multiple versions:
 make e2e POSTGRES_VERSIONS=14,15,16,17
 ```
 
+Run multiple versions concurrently:
+
+```sh
+make e2e POSTGRES_VERSIONS=14,15,16 E2E_PARALLELISM=3
+```
+
 Equivalent direct command:
 
 ```sh
-go test -tags=e2e ./test/e2e -count=1 -timeout=45m -postgres-versions="14,15,16,17"
+go test -tags=e2e ./test/e2e -count=1 -timeout=45m -postgres-versions="14,15,16,17" -parallelism=2
 ```
 
 ## Runtime

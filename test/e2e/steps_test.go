@@ -18,7 +18,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cucumber/godog"
@@ -42,12 +44,14 @@ const (
 var postgresVersionsFlag = flag.String("postgres-versions", envDefault("POSTGRES_VERSIONS", defaultPGVersion), "comma-separated PostgreSQL major versions to test")
 var containerRuntimeFlag = flag.String("container-runtime", envDefault("CONTAINER_RUNTIME", "auto"), "container runtime for image builds: auto, docker, or podman")
 var pluginImageTag = flag.String("plugin-image-tag", envDefault("PLUGIN_IMAGE_TAG", ""), "unique tag for the e2e plugin image; auto-generated if empty")
+var e2eParallelismFlag = flag.Int("parallelism", envDefaultInt("E2E_PARALLELISM", 2), "maximum PostgreSQL versions to test concurrently")
 
 type suiteState struct {
 	postgresVersions []string
 	verifiedVersions map[string]bool
 	containerRuntime string
 	pluginImage      string
+	mu               sync.Mutex
 }
 
 func InitializeScenario(ctx *godog.ScenarioContext) {
@@ -200,37 +204,80 @@ func (s *suiteState) iRunLogicalBackupsForTheConfiguredPostgreSQLVersions(ctx co
 		return errors.New("no PostgreSQL versions configured")
 	}
 
-	for _, version := range s.postgresVersions {
-		cluster := "pgdump-pg" + version
-		_, _ = command(ctx, "kubectl", "-n", e2eNamespace, "delete", "cluster", cluster, "--ignore-not-found", "--timeout=120s")
-		if _, err := kubectlApply(ctx, cnpgClusterManifest(cluster, version)); err != nil {
-			return err
-		}
-		if err := waitForClusterReady(ctx, cluster); err != nil {
-			return err
-		}
-		if err := createSecondDatabase(ctx, cluster); err != nil {
-			return err
-		}
-
-		scheduledBackupName := "logical-" + cluster
-		if _, err := kubectlApply(ctx, scheduledBackupManifest(scheduledBackupName, cluster)); err != nil {
-			return err
-		}
-
-		prefix := fmt.Sprintf("logical/%s/%s/", e2eNamespace, cluster)
-		if err := s.waitForS3Objects(ctx, prefix, 2); err != nil {
-			return err
-		}
-		s.verifiedVersions[version] = true
+	parallelism := *e2eParallelismFlag
+	if parallelism < 1 {
+		parallelism = 1
 	}
 
+	sem := make(chan struct{}, parallelism)
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+
+	for _, version := range s.postgresVersions {
+		version := version
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			if err := s.runLogicalBackupForVersion(ctx, version); err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	return firstErr
+}
+
+func (s *suiteState) runLogicalBackupForVersion(ctx context.Context, version string) error {
+	cluster := "pgdump-pg" + version
+	scheduledBackupName := "logical-" + cluster
+	prefix := fmt.Sprintf("logical/%s/%s/", e2eNamespace, cluster)
+
+	if err := s.cleanBackupArtifacts(ctx, cluster, scheduledBackupName, prefix); err != nil {
+		return fmt.Errorf("PostgreSQL %s cleanup: %w", version, err)
+	}
+	_, _ = command(ctx, "kubectl", "-n", e2eNamespace, "delete", "cluster", cluster, "--ignore-not-found", "--timeout=120s")
+	if _, err := kubectlApply(ctx, cnpgClusterManifest(cluster, version)); err != nil {
+		return fmt.Errorf("PostgreSQL %s cluster apply: %w", version, err)
+	}
+	if err := waitForClusterReady(ctx, cluster); err != nil {
+		return fmt.Errorf("PostgreSQL %s cluster ready: %w", version, err)
+	}
+	if err := createSecondDatabase(ctx, cluster); err != nil {
+		return fmt.Errorf("PostgreSQL %s create extra database: %w", version, err)
+	}
+	if _, err := kubectlApply(ctx, scheduledBackupManifest(scheduledBackupName, cluster)); err != nil {
+		return fmt.Errorf("PostgreSQL %s scheduled backup apply: %w", version, err)
+	}
+	if err := s.waitForS3Objects(ctx, prefix, 2); err != nil {
+		return fmt.Errorf("PostgreSQL %s wait for dumps: %w", version, err)
+	}
+
+	s.mu.Lock()
+	s.verifiedVersions[version] = true
+	s.mu.Unlock()
 	return nil
+}
+
+func (s *suiteState) cleanBackupArtifacts(ctx context.Context, cluster, scheduledBackupName, prefix string) error {
+	_, _ = command(ctx, "kubectl", "-n", e2eNamespace, "delete", "scheduledbackup", scheduledBackupName, "--ignore-not-found", "--timeout=120s")
+	_, _ = command(ctx, "kubectl", "-n", e2eNamespace, "delete", "backup", "-l", "cnpg.io/cluster="+cluster, "--ignore-not-found", "--timeout=120s")
+	return s.deleteS3Prefix(ctx, prefix)
 }
 
 func (s *suiteState) everyPostgreSQLVersionShouldHaveUploadedDumpsToRustFS() error {
 	for _, version := range s.postgresVersions {
-		if !s.verifiedVersions[version] {
+		s.mu.Lock()
+		verified := s.verifiedVersions[version]
+		s.mu.Unlock()
+		if !verified {
 			return fmt.Errorf("PostgreSQL %s was not verified", version)
 		}
 	}
@@ -261,7 +308,7 @@ func (s *suiteState) waitForS3Objects(ctx context.Context, prefix string, want i
 			"aws", "--endpoint-url", "http://rustfs:9000", "s3api", "list-objects-v2",
 			"--bucket", rustFSBucket,
 			"--prefix", prefix,
-			"--query", "length(Contents[?ends_with(Key, '.dump')])",
+			"--query", "length((Contents || [])[?ends_with(Key, '.dump')])",
 			"--output", "text",
 		)
 		if err != nil {
@@ -276,6 +323,12 @@ func (s *suiteState) waitForS3Objects(ctx context.Context, prefix string, want i
 		}
 		return nil
 	})
+}
+
+func (s *suiteState) deleteS3Prefix(ctx context.Context, prefix string) error {
+	return s.runInAWSPod(ctx,
+		"aws", "--endpoint-url", "http://rustfs:9000", "s3", "rm", "s3://"+rustFSBucket+"/"+prefix, "--recursive",
+	)
 }
 
 func firstInteger(output string) (int, error) {
@@ -294,8 +347,9 @@ func (s *suiteState) runInAWSPod(ctx context.Context, args ...string) error {
 }
 
 func (s *suiteState) runInAWSPodOutput(ctx context.Context, args ...string) (string, error) {
+	podName := fmt.Sprintf("aws-cli-%d", time.Now().UnixNano())
 	runArgs := []string{
-		"-n", e2eNamespace, "run", "aws-cli", "--rm", "-i", "--restart=Never",
+		"-n", e2eNamespace, "run", podName, "--rm", "-i", "--restart=Never",
 		"--image", "docker.io/amazon/aws-cli:2.17.50",
 		"--env", "AWS_ACCESS_KEY_ID=" + rustFSAccessKey,
 		"--env", "AWS_SECRET_ACCESS_KEY=" + rustFSSecretKey,
@@ -672,6 +726,18 @@ func envDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envDefaultInt(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func detectContainerRuntime(ctx context.Context) (string, error) {
