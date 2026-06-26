@@ -11,7 +11,7 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 env:
@@ -59,3 +59,38 @@ jobs:
             VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Render release deployment manifest
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          IMAGE_TAG: ${{ steps.meta.outputs.version }}
+        run: |
+          mkdir -p dist
+          image="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+          sed "s|image: platform/cnpg-plugin-pgdump:latest|image: ${image}|" \
+            kubernetes/deployment.yaml > dist/cnpg-plugin-pgdump-deployment.yaml
+
+      - name: Extract release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          awk -v tag="$tag" -v version="$version" '
+            $0 == "### " tag || $0 == "### v" version || $0 == "### " version { capture=1; next }
+            capture && /^### / { exit }
+            capture { print }
+          ' CHANGELOG.md > dist/release-notes.md
+          if [ ! -s dist/release-notes.md ]; then
+            cp CHANGELOG.md dist/release-notes.md
+          fi
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/cnpg-plugin-pgdump-deployment.yaml \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file dist/release-notes.md \
+            --verify-tag
