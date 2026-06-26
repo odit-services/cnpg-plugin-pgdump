@@ -602,6 +602,7 @@ stringData:
   access-key-id: %[2]s
   secret-access-key: %[3]s
   region: us-east-1
+  bucket: %[5]s
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -657,7 +658,7 @@ spec:
     - name: console
       port: 9001
       targetPort: 9001
-`, e2eNamespace, rustFSAccessKey, rustFSSecretKey, rustFSEndpoint)
+`, e2eNamespace, rustFSAccessKey, rustFSSecretKey, rustFSEndpoint, rustFSBucket)
 }
 
 func (s *suiteState) pluginManifest() (string, error) {
@@ -827,7 +828,8 @@ spec:
     name: pgdump-backup.cloudnative-pg.io
     parameters:
       target_type: s3
-      bucket: %[3]s
+      bucket_secret_name: backup-s3-credentials
+      bucket_secret_key: bucket
       path: logical
       object_key_template: "{namespace}/{cluster}/{database}/{backup_id}.dump"
       retention_days: "30"
@@ -840,8 +842,8 @@ spec:
       secret_access_key_secret_name: backup-s3-credentials
       secret_access_key_secret_key: secret-access-key
   cluster:
-    name: %[5]s
-`, name, e2eNamespace, rustFSBucket, rustFSEndpoint, cluster)
+    name: %[3]s
+`, name, e2eNamespace, cluster)
 }
 
 func parseVersions(value string) []string {

@@ -175,6 +175,11 @@ func (s *Server) resolveS3Secrets(ctx context.Context, namespace string, backupC
 	} else if value != "" {
 		backupConfig.Region = value
 	}
+	if value, err := s.secretValue(ctx, namespace, backupConfig.BucketSecret); err != nil {
+		return backupConfig, err
+	} else if value != "" {
+		backupConfig.Bucket = value
+	}
 	return backupConfig, nil
 }
 

@@ -49,6 +49,40 @@ func TestParseBackupConfigValidatesObjectKeyTemplate(t *testing.T) {
 	}
 }
 
+func TestParseBackupConfigAcceptsBucketSecretRef(t *testing.T) {
+	cfg, err := ParseBackupConfig(map[string]string{
+		"bucket_secret_name": "s3-credentials",
+		"bucket_secret_key":  "my-bucket",
+	}, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BucketSecret.Name != "s3-credentials" || cfg.BucketSecret.Key != "my-bucket" {
+		t.Fatalf("bucket secret ref %#v", cfg.BucketSecret)
+	}
+}
+
+func TestParseBackupConfigBucketSecretRefDefaultKey(t *testing.T) {
+	cfg, err := ParseBackupConfig(map[string]string{
+		"bucket_secret_name": "s3-credentials",
+	}, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BucketSecret.Key != "bucket" {
+		t.Fatalf("bucket secret key %q", cfg.BucketSecret.Key)
+	}
+}
+
+func TestParseBackupConfigRequiresBucketOrSecretRef(t *testing.T) {
+	if _, err := ParseBackupConfig(nil, Config{}); err == nil {
+		t.Fatal("expected error")
+	}
+	if _, err := ParseBackupConfig(map[string]string{}, Config{}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func TestParseBackupConfigSecretRefs(t *testing.T) {
 	cfg, err := ParseBackupConfig(map[string]string{
 		"bucket":                        "team-backups",

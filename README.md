@@ -384,7 +384,9 @@ Secret ref parameter defaults:
 - `access_key_id_secret_key`: `access-key-id`
 - `secret_access_key_secret_key`: `secret-access-key`
 
-`bucket`, `path`, and `object_key_template` are configured per `ScheduledBackup`, so each CNPG cluster can use its own bucket or object layout. `path` is an optional prefix. `object_key_template` defaults to `{namespace}/{cluster}/{database}/{backup_id}.dump` and supports these placeholders:
+The bucket can be set directly via `bucket` or read from a Kubernetes Secret via `bucket_secret_name` / `bucket_secret_key` (default key: `bucket`). This is useful for tools like [s3ops](https://github.com/odit-services/s3ops) that manage per-service S3 configuration. When both are specified, the secret value takes precedence.
+
+`path` and `object_key_template` are configured per `ScheduledBackup`, so each CNPG cluster can use its own bucket or object layout. `path` is an optional prefix. `object_key_template` defaults to `{namespace}/{cluster}/{database}/{backup_id}.dump` and supports these placeholders:
 
 - `{namespace}`
 - `{cluster}`

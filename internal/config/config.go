@@ -35,6 +35,7 @@ type BackupConfig struct {
 	SecretAccessKeySecret SecretKeyRef
 	EndpointURLSecret     SecretKeyRef
 	RegionSecret          SecretKeyRef
+	BucketSecret          SecretKeyRef
 }
 
 type SecretKeyRef struct {
@@ -84,12 +85,13 @@ func ParseBackupConfig(parameters map[string]string, defaults Config) (BackupCon
 		SecretAccessKeySecret: secretRef(parameters, "secret_access_key_secret", "secret-access-key"),
 		EndpointURLSecret:     secretRef(parameters, "endpoint_url_secret", "endpoint"),
 		RegionSecret:          secretRef(parameters, "region_secret", "region"),
+		BucketSecret:          secretRef(parameters, "bucket_secret", "bucket"),
 	}
 
 	if cfg.TargetType != DefaultTargetType {
 		return BackupConfig{}, errInvalidParameter("target_type", cfg.TargetType)
 	}
-	if cfg.Bucket == "" {
+	if cfg.Bucket == "" && cfg.BucketSecret.Name == "" {
 		return BackupConfig{}, errMissingParameter("bucket")
 	}
 	if cfg.ObjectKeyTemplate == "" {

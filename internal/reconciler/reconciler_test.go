@@ -41,6 +41,51 @@ func TestResolveS3Secrets(t *testing.T) {
 	}
 }
 
+func TestResolveS3SecretsResolvesBucket(t *testing.T) {
+	server := New(config.Config{}, nil, fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "s3-creds", Namespace: "app"},
+		Data: map[string][]byte{
+			"bucket": []byte("my-backups"),
+		},
+	}), nil)
+
+	cfg, err := server.resolveS3Secrets(context.Background(), "app", config.BackupConfig{
+		Bucket:       "fallback",
+		BucketSecret: config.SecretKeyRef{Name: "s3-creds", Key: "bucket"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Bucket != "my-backups" {
+		t.Fatalf("bucket %q", cfg.Bucket)
+	}
+}
+
+func TestResolveS3SecretsBucketSecretFallback(t *testing.T) {
+	// When BucketSecret.Name is empty, Bucket should not be overwritten
+	server := New(config.Config{}, nil, nil, nil)
+	cfg, err := server.resolveS3Secrets(context.Background(), "app", config.BackupConfig{
+		Bucket: "direct-bucket",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Bucket != "direct-bucket" {
+		t.Fatalf("bucket %q", cfg.Bucket)
+	}
+}
+
+func TestResolveS3SecretsBucketSecretEmptyName(t *testing.T) {
+	// When BucketSecret references a non-existent secret, it should error
+	server := New(config.Config{}, nil, fake.NewSimpleClientset(), nil)
+	_, err := server.resolveS3Secrets(context.Background(), "app", config.BackupConfig{
+		BucketSecret: config.SecretKeyRef{Name: "nonexistent", Key: "bucket"},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func TestResolveS3SecretsRequiresReferencedKeys(t *testing.T) {
 	server := New(config.Config{}, nil, fake.NewSimpleClientset(&corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "backup-s3", Namespace: "app"},
