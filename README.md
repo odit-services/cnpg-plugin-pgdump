@@ -6,10 +6,20 @@ The plugin uses `ReconcilerHooks.Pre` for `Backup` reconciliation. On success it
 
 ## Build
 
+Using `make`:
+
 ```sh
 make build
 make test
 make docker-build IMAGE=platform/cnpg-plugin-pgdump:latest
+```
+
+Using `task`:
+
+```sh
+task build
+task test
+task docker-build IMAGE=platform/cnpg-plugin-pgdump:latest
 ```
 
 ## E2E Tests
@@ -28,6 +38,12 @@ Run for one version:
 
 ```sh
 make e2e POSTGRES_VERSIONS=16
+```
+
+Equivalent Taskfile command:
+
+```sh
+task e2e POSTGRES_VERSIONS=16
 ```
 
 Run for multiple versions:
@@ -49,18 +65,31 @@ The image is based on `postgres:16-alpine`, so it includes `pg_dump` 16. This is
 Configuration can be set with flags or environment variables:
 
 - `--listen-address`, e.g. `:50051` for TCP or `unix:///plugins` for same-pod socket setups
-- `S3_ENDPOINT` / `--s3-endpoint`
-- `S3_REGION` / `--s3-region`
-- `S3_ACCESS_KEY_ID` / `--s3-access-key-id`
-- `S3_SECRET_ACCESS_KEY` / `--s3-secret-access-key`
+- `S3_ENDPOINT` / `--s3-endpoint`, optional default if a backup does not provide `endpoint_url` or `endpoint_url_secret_name`
+- `S3_REGION` / `--s3-region`, optional default if a backup does not provide `region` or `region_secret_name`
+- `S3_ACCESS_KEY_ID` / `--s3-access-key-id`, optional fallback if a backup does not provide `access_key_id_secret_name`
+- `S3_SECRET_ACCESS_KEY` / `--s3-secret-access-key`, optional fallback if a backup does not provide `secret_access_key_secret_name`
 - `PGDUMP_TIMEOUT`, default `12h`
 - `PGDUMP_WORKDIR`, default OS temp dir
+
+Prefer per-backup S3 credential Secrets over Deployment-wide S3 environment variables.
 
 ## ScheduledBackup
 
 Use the standard CNPG `ScheduledBackup` with `method: plugin`:
 
 ```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: logical-backup-s3
+type: Opaque
+stringData:
+  endpoint: https://minio.platform.svc:9000
+  access-key-id: minio
+  secret-access-key: minio123
+  region: us-east-1
+---
 apiVersion: postgresql.cnpg.io/v1
 kind: ScheduledBackup
 metadata:
@@ -75,11 +104,20 @@ spec:
       bucket: team-backups
       path: logical
       retention_days: "30"
-      endpoint_url: https://minio.platform.svc:9000
-      region: us-east-1
+      endpoint_url_secret_name: logical-backup-s3
+      region_secret_name: logical-backup-s3
+      access_key_id_secret_name: logical-backup-s3
+      secret_access_key_secret_name: logical-backup-s3
   cluster:
     name: my-app-db
 ```
+
+Secret ref parameter defaults:
+
+- `endpoint_url_secret_key`: `endpoint`
+- `region_secret_key`: `region`
+- `access_key_id_secret_key`: `access-key-id`
+- `secret_access_key_secret_key`: `secret-access-key`
 
 Object keys are written as:
 
@@ -89,7 +127,7 @@ Object keys are written as:
 
 ## Notes
 
-- The plugin connects through the CNPG RW service: `<cluster>-rw.<namespace>.svc:5432`.
+- The plugin connects through the CNPG read service: `<cluster>-r.<namespace>.svc:5432`.
 - Credentials are read from the CNPG application secret: `<cluster>-app`.
 - Databases are discovered with `SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate`.
 - Retention deletes objects whose backup timestamp in the filename is older than `retention_days`.
