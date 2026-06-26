@@ -17,6 +17,9 @@ func TestParseBackupConfigDefaults(t *testing.T) {
 	if cfg.Region != "us-east-1" {
 		t.Fatalf("region %q", cfg.Region)
 	}
+	if cfg.ObjectKeyTemplate != DefaultObjectKeyTemplate {
+		t.Fatalf("object key template %q", cfg.ObjectKeyTemplate)
+	}
 }
 
 func TestParseBackupConfigRegionParameter(t *testing.T) {
@@ -32,6 +35,17 @@ func TestParseBackupConfigRegionParameter(t *testing.T) {
 func TestParseBackupConfigRequiresBucket(t *testing.T) {
 	if _, err := ParseBackupConfig(nil, Config{}); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestParseBackupConfigValidatesObjectKeyTemplate(t *testing.T) {
+	for _, template := range []string{"{cluster}/{backup_id}.dump", "{cluster}/{database}.dump"} {
+		if _, err := ParseBackupConfig(map[string]string{
+			"bucket":              "team-backups",
+			"object_key_template": template,
+		}, Config{}); err == nil {
+			t.Fatalf("expected error for template %q", template)
+		}
 	}
 }
 

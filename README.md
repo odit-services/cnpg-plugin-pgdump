@@ -99,6 +99,7 @@ spec:
       target_type: s3
       bucket: team-backups
       path: logical
+      object_key_template: "{namespace}/{cluster}/{database}/{backup_id}.dump"
       retention_days: "30"
       endpoint_url_secret_name: logical-backup-s3
       region_secret_name: logical-backup-s3
@@ -115,10 +116,26 @@ Secret ref parameter defaults:
 - `access_key_id_secret_key`: `access-key-id`
 - `secret_access_key_secret_key`: `secret-access-key`
 
+`bucket`, `path`, and `object_key_template` are configured per `ScheduledBackup`, so each CNPG cluster can use its own bucket or object layout. `path` is an optional prefix. `object_key_template` defaults to `{namespace}/{cluster}/{database}/{backup_id}.dump` and supports these placeholders:
+
+- `{namespace}`
+- `{cluster}`
+- `{database}`
+- `{backup_id}`
+
+The template must include `{database}` and `{backup_id}` to avoid overwriting dumps. For a bucket dedicated to one CNPG cluster, a compact layout can be:
+
+```yaml
+parameters:
+  bucket: my-app-db-backups
+  path: logical
+  object_key_template: "{database}/{backup_id}.dump"
+```
+
 Object keys are written as:
 
 ```text
-<path>/<namespace>/<cluster-name>/<db-name>/<backup-name>-<timestamp>.dump
+<path>/<rendered-object-key-template>
 ```
 
 ## Notes

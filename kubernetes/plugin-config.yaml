@@ -37,6 +37,7 @@ spec:
       target_type: s3
       bucket: team-backups
       path: logical
+      object_key_template: "{namespace}/{cluster}/{database}/{backup_id}.dump"
       retention_days: "30"
       endpoint_url_secret_name: logical-backup-s3
       region_secret_name: logical-backup-s3

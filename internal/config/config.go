@@ -8,10 +8,11 @@ import (
 )
 
 const (
-	PluginName        = "pgdump-backup.cloudnative-pg.io"
-	DefaultRegion     = "us-east-1"
-	DefaultTargetType = "s3"
-	DefaultRetention  = 30
+	PluginName               = "pgdump-backup.cloudnative-pg.io"
+	DefaultRegion            = "us-east-1"
+	DefaultTargetType        = "s3"
+	DefaultRetention         = 30
+	DefaultObjectKeyTemplate = "{namespace}/{cluster}/{database}/{backup_id}.dump"
 )
 
 type Config struct {
@@ -24,6 +25,7 @@ type BackupConfig struct {
 	TargetType            string
 	Bucket                string
 	Path                  string
+	ObjectKeyTemplate     string
 	RetentionDays         int
 	EndpointURL           string
 	Region                string
@@ -74,6 +76,7 @@ func ParseBackupConfig(parameters map[string]string, defaults Config) (BackupCon
 		TargetType:            withDefault(parameters["target_type"], DefaultTargetType),
 		Bucket:                parameters["bucket"],
 		Path:                  strings.Trim(parameters["path"], "/"),
+		ObjectKeyTemplate:     strings.Trim(parameters["object_key_template"], "/"),
 		RetentionDays:         retention,
 		EndpointURL:           parameters["endpoint_url"],
 		Region:                withDefault(parameters["region"], DefaultRegion),
@@ -88,6 +91,15 @@ func ParseBackupConfig(parameters map[string]string, defaults Config) (BackupCon
 	}
 	if cfg.Bucket == "" {
 		return BackupConfig{}, errMissingParameter("bucket")
+	}
+	if cfg.ObjectKeyTemplate == "" {
+		cfg.ObjectKeyTemplate = DefaultObjectKeyTemplate
+	}
+	if !strings.Contains(cfg.ObjectKeyTemplate, "{database}") {
+		return BackupConfig{}, errInvalidParameter("object_key_template", cfg.ObjectKeyTemplate)
+	}
+	if !strings.Contains(cfg.ObjectKeyTemplate, "{backup_id}") {
+		return BackupConfig{}, errInvalidParameter("object_key_template", cfg.ObjectKeyTemplate)
 	}
 
 	return cfg, nil

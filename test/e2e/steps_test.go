@@ -632,6 +632,7 @@ spec:
       target_type: s3
       bucket: %[3]s
       path: logical
+      object_key_template: "{namespace}/{cluster}/{database}/{backup_id}.dump"
       retention_days: "30"
       endpoint_url_secret_name: backup-s3-credentials
       endpoint_url_secret_key: endpoint

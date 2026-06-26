@@ -112,12 +112,26 @@ func (u *S3Uploader) Delete(ctx context.Context, key string) error {
 	return err
 }
 
-func ObjectKey(prefix, namespace, cluster, database, backupID string) string {
-	return cleanKey(path.Join(prefix, namespace, cluster, database, backupID+".dump"))
+func ObjectKey(prefix, template, namespace, cluster, database, backupID string) string {
+	return cleanKey(path.Join(prefix, renderObjectKeyTemplate(template, namespace, cluster, database, backupID)))
 }
 
-func DatabasePrefix(prefix, namespace, cluster, database string) string {
-	return cleanPrefix(path.Join(prefix, namespace, cluster, database))
+func DatabasePrefix(prefix, template, namespace, cluster, database string) string {
+	beforeBackupID, _, _ := strings.Cut(template, "{backup_id}")
+	return cleanPrefix(path.Join(prefix, renderObjectKeyTemplate(beforeBackupID, namespace, cluster, database, "")))
+}
+
+func renderObjectKeyTemplate(template, namespace, cluster, database, backupID string) string {
+	replacements := map[string]string{
+		"{namespace}": namespace,
+		"{cluster}":   cluster,
+		"{database}":  database,
+		"{backup_id}": backupID,
+	}
+	for placeholder, value := range replacements {
+		template = strings.ReplaceAll(template, placeholder, value)
+	}
+	return template
 }
 
 func cleanKey(key string) string {

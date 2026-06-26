@@ -127,7 +127,7 @@ func (s *Server) runBackup(ctx context.Context, cluster cnpgv1.Cluster, backup c
 			return result, err
 		}
 
-		key := pgbackup.ObjectKey(backupConfig.Path, cluster.Namespace, cluster.Name, database, id)
+		key := pgbackup.ObjectKey(backupConfig.Path, backupConfig.ObjectKeyTemplate, cluster.Namespace, cluster.Name, database, id)
 		uploadedSize, err := uploader.Upload(ctx, localPath, key)
 		_ = os.Remove(localPath)
 		if err != nil {
@@ -141,7 +141,7 @@ func (s *Server) runBackup(ctx context.Context, cluster cnpgv1.Cluster, backup c
 		result.DatabasesBackedUp = append(result.DatabasesBackedUp, database)
 		result.Objects = append(result.Objects, "s3://"+path.Join(backupConfig.Bucket, key))
 
-		prefix := pgbackup.DatabasePrefix(backupConfig.Path, cluster.Namespace, cluster.Name, database)
+		prefix := pgbackup.DatabasePrefix(backupConfig.Path, backupConfig.ObjectKeyTemplate, cluster.Namespace, cluster.Name, database)
 		if err := pgbackup.ApplyRetention(ctx, uploader, prefix, backupConfig.RetentionDays, now); err != nil {
 			return result, err
 		}
