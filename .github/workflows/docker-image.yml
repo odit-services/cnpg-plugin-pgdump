@@ -81,7 +81,7 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           version="${tag#v}"
           awk -v tag="$tag" -v version="$version" '
-            $0 == "### " tag || $0 == "### v" version || $0 == "### " version { capture=1; next }
+            /^### / { line=$0; gsub(/\[|\]\([^)]*\)/, "", line); if (index(line, tag) || index(line, "v" version) || index(line, version)) { capture=1; next } }
             capture && /^### / { exit }
             capture { print }
           ' CHANGELOG.md > dist/release-notes.md
