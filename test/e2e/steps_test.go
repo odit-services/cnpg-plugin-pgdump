@@ -45,13 +45,15 @@ var postgresVersionsFlag = flag.String("postgres-versions", envDefault("POSTGRES
 var containerRuntimeFlag = flag.String("container-runtime", envDefault("CONTAINER_RUNTIME", "auto"), "container runtime for image builds: auto, docker, or podman")
 var pluginImageTag = flag.String("plugin-image-tag", envDefault("PLUGIN_IMAGE_TAG", ""), "unique tag for the e2e plugin image; auto-generated if empty")
 var e2eParallelismFlag = flag.Int("parallelism", envDefaultInt("E2E_PARALLELISM", 2), "maximum PostgreSQL versions to test concurrently")
+var e2eRestoreTestFlag = flag.Bool("restore-test", envDefaultBool("E2E_RESTORE_TEST", false), "enable restore-from-S3 test after each backup")
 
 type suiteState struct {
-	postgresVersions []string
-	verifiedVersions map[string]bool
-	containerRuntime string
-	pluginImage      string
-	mu               sync.Mutex
+	postgresVersions   []string
+	verifiedVersions   map[string]bool
+	containerRuntime   string
+	pluginImage        string
+	mu                 sync.Mutex
+	restoreTestEnabled bool
 }
 
 func InitializeScenario(ctx *godog.ScenarioContext) {
@@ -61,9 +63,10 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	}
 
 	state := &suiteState{
-		postgresVersions: parseVersions(*postgresVersionsFlag),
-		verifiedVersions: map[string]bool{},
-		pluginImage:      pluginImageBase + ":" + tag,
+		postgresVersions:   parseVersions(*postgresVersionsFlag),
+		verifiedVersions:   map[string]bool{},
+		pluginImage:        pluginImageBase + ":" + tag,
+		restoreTestEnabled: *e2eRestoreTestFlag,
 	}
 
 	ctx.Step(`^a kind cluster for pgdump e2e tests$`, state.aKindClusterForPgdumpE2ETests)
@@ -72,6 +75,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the pgdump plugin is deployed$`, state.thePgdumpPluginIsDeployed)
 	ctx.Step(`^I run logical backups for the configured PostgreSQL versions$`, state.iRunLogicalBackupsForTheConfiguredPostgreSQLVersions)
 	ctx.Step(`^every PostgreSQL version should have uploaded dumps to RustFS$`, state.everyPostgreSQLVersionShouldHaveUploadedDumpsToRustFS)
+	ctx.Step(`^I should be able to restore dumps from S3$`, state.iShouldBeAbleToRestoreDumpsFromS3)
 }
 
 func (s *suiteState) aKindClusterForPgdumpE2ETests(ctx context.Context) error {
@@ -253,11 +257,23 @@ func (s *suiteState) runLogicalBackupForVersion(ctx context.Context, version str
 	if err := createSecondDatabase(ctx, cluster); err != nil {
 		return fmt.Errorf("PostgreSQL %s create extra database: %w", version, err)
 	}
+	if err := seedSampleData(ctx, cluster); err != nil {
+		return fmt.Errorf("PostgreSQL %s seed data: %w", version, err)
+	}
 	if _, err := kubectlApply(ctx, scheduledBackupManifest(scheduledBackupName, cluster)); err != nil {
 		return fmt.Errorf("PostgreSQL %s scheduled backup apply: %w", version, err)
 	}
+	if err := s.waitForBackup(ctx, cluster); err != nil {
+		return fmt.Errorf("PostgreSQL %s wait for backup: %w", version, err)
+	}
 	if err := s.waitForS3Objects(ctx, prefix, 2); err != nil {
 		return fmt.Errorf("PostgreSQL %s wait for dumps: %w", version, err)
+	}
+
+	if s.restoreTestEnabled {
+		if err := s.restoreBackupForVersion(ctx, version); err != nil {
+			return fmt.Errorf("PostgreSQL %s restore: %w", version, err)
+		}
 	}
 
 	s.mu.Lock()
@@ -284,6 +300,79 @@ func (s *suiteState) everyPostgreSQLVersionShouldHaveUploadedDumpsToRustFS() err
 	return nil
 }
 
+func (s *suiteState) iShouldBeAbleToRestoreDumpsFromS3() error {
+	return nil
+}
+
+func (s *suiteState) restoreBackupForVersion(ctx context.Context, version string) error {
+	cluster := "pgdump-pg" + version
+	ns := e2eNamespace
+	pod := cluster + "-1"
+
+	allOutput, err := s.runInAWSPodOutput(ctx,
+		"aws", "--endpoint-url", "http://rustfs:9000", "s3api", "list-objects-v2",
+		"--bucket", rustFSBucket,
+		"--prefix", fmt.Sprintf("logical/%s/%s/", ns, cluster),
+		"--query", "Contents[?ends_with(Key, '.dump')].Key",
+		"--output", "text",
+	)
+	if err != nil {
+		return fmt.Errorf("list cluster dumps: %w", err)
+	}
+	allKeys := s3ObjectKeys(allOutput)
+	if len(allKeys) == 0 {
+		return fmt.Errorf("no dumps found under prefix logical/%s/%s/", ns, cluster)
+	}
+	var dumpKey string
+	for _, k := range allKeys {
+		if strings.Contains(k, "/app/") {
+			dumpKey = k
+			break
+		}
+	}
+	if dumpKey == "" {
+		return fmt.Errorf("no app dump among keys: %v", allKeys)
+	}
+
+	dumpData, err := s.runInAWSPodOutput(ctx,
+		"aws", "--endpoint-url", "http://rustfs:9000", "s3", "cp", "s3://"+rustFSBucket+"/"+dumpKey, "-",
+	)
+	if err != nil {
+		return fmt.Errorf("download %s: %w", dumpKey, err)
+	}
+
+	if _, err := command(ctx, "kubectl", "-n", ns, "exec", pod, "-c", "postgres", "--",
+		"psql", "-U", "postgres", "-d", "postgres", "-c", "CREATE DATABASE restore_test",
+	); err != nil && !strings.Contains(err.Error(), "already exists") {
+		return fmt.Errorf("create restore_test: %w", err)
+	}
+
+	cmd := exec.CommandContext(ctx, "kubectl", "-n", ns, "exec", "-i", pod, "-c", "postgres", "--",
+		"pg_restore", "-U", "postgres", "-d", "restore_test", "-Fc",
+	)
+	cmd.Stdin = strings.NewReader(dumpData)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("pg_restore failed: %w\nstderr: %s", err, stderr.String())
+	}
+
+	out, err := command(ctx, "kubectl", "-n", ns, "exec", pod, "-c", "postgres", "--",
+		"psql", "-U", "postgres", "-d", "restore_test", "-t", "-A", "-c", "SELECT COUNT(*) FROM e2e_widgets",
+	)
+	if err != nil {
+		return fmt.Errorf("verify restore count: %w", err)
+	}
+	count, err := firstInteger(out)
+	if err != nil {
+		return fmt.Errorf("parse widget count: %w", err)
+	}
+	if count != 3 {
+		return fmt.Errorf("expected 3 widgets after restore, got %d", count)
+	}
+	return nil
+}
+
 func waitForClusterReady(ctx context.Context, name string) error {
 	return waitFor(ctx, 10*time.Minute, func(ctx context.Context) error {
 		_, err := command(ctx, "kubectl", "-n", e2eNamespace, "wait", "cluster/"+name, "--for=condition=Ready", "--timeout=20s")
@@ -302,27 +391,81 @@ func createSecondDatabase(ctx context.Context, cluster string) error {
 	})
 }
 
+func execInPod(ctx context.Context, pod, database, sql string) error {
+	_, err := command(ctx, "kubectl", "-n", e2eNamespace, "exec", pod, "-c", "postgres", "--",
+		"psql", "-U", "postgres", "-d", database, "-c", sql,
+	)
+	return err
+}
+
+func seedSampleData(ctx context.Context, cluster string) error {
+	pod := cluster + "-1"
+	for _, db := range []string{"app", "postgres", "extra"} {
+		for _, stmt := range []string{
+			`CREATE TABLE IF NOT EXISTS e2e_widgets (id SERIAL PRIMARY KEY, name TEXT NOT NULL, quantity INT NOT NULL DEFAULT 0)`,
+			`INSERT INTO e2e_widgets (name, quantity) VALUES ('foo', 10), ('bar', 20), ('baz', 30) ON CONFLICT DO NOTHING`,
+			`GRANT SELECT ON ALL TABLES IN SCHEMA public TO app`,
+			`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app`,
+		} {
+			if err := execInPod(ctx, pod, db, stmt); err != nil {
+				return fmt.Errorf("seed %s/%s: %w", db, stmt[:40], err)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *suiteState) waitForBackup(ctx context.Context, cluster string) error {
+	return waitFor(ctx, 2*time.Minute, func(ctx context.Context) error {
+		out, err := command(ctx, "kubectl", "-n", e2eNamespace, "get", "backup", "-l", "cnpg.io/cluster="+cluster, "-o", "name")
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(out) == "" {
+			return fmt.Errorf("no backup resource yet")
+		}
+		return nil
+	})
+}
+
 func (s *suiteState) waitForS3Objects(ctx context.Context, prefix string, want int) error {
 	return waitFor(ctx, 10*time.Minute, func(ctx context.Context) error {
 		output, err := s.runInAWSPodOutput(ctx,
 			"aws", "--endpoint-url", "http://rustfs:9000", "s3api", "list-objects-v2",
 			"--bucket", rustFSBucket,
 			"--prefix", prefix,
-			"--query", "length((Contents || [])[?ends_with(Key, '.dump')])",
+			"--query", "Contents[?ends_with(Key, '.dump')].Key",
 			"--output", "text",
 		)
 		if err != nil {
 			return err
 		}
-		count, err := firstInteger(output)
-		if err != nil {
-			return err
-		}
+		count := s3ObjectCount(output)
 		if count < want {
 			return fmt.Errorf("found %d dump objects under %s, want at least %d", count, prefix, want)
 		}
 		return nil
 	})
+}
+
+func s3ObjectCount(output string) int {
+	count := 0
+	for _, field := range strings.Fields(output) {
+		if strings.HasSuffix(field, ".dump") {
+			count++
+		}
+	}
+	return count
+}
+
+func s3ObjectKeys(output string) []string {
+	var keys []string
+	for _, field := range strings.Fields(output) {
+		if strings.HasSuffix(field, ".dump") {
+			keys = append(keys, field)
+		}
+	}
+	return keys
 }
 
 func (s *suiteState) deleteS3Prefix(ctx context.Context, prefix string) error {
@@ -738,6 +881,17 @@ func envDefaultInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func envDefaultBool(key string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes":
+		return true
+	case "0", "false", "no":
+		return false
+	default:
+		return fallback
+	}
 }
 
 func detectContainerRuntime(ctx context.Context) (string, error) {

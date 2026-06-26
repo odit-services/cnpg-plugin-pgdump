@@ -8,3 +8,4 @@ Feature: Logical pg_dump backups to RustFS
     And the pgdump plugin is deployed
     When I run logical backups for the configured PostgreSQL versions
     Then every PostgreSQL version should have uploaded dumps to RustFS
+    And I should be able to restore dumps from S3
