@@ -1,0 +1,438 @@
+//go:build e2e
+
+package e2e
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/cucumber/godog"
+)
+
+const (
+	clusterName      = "cnpg-plugin-pgdump-e2e"
+	pluginImage      = "cnpg-plugin-pgdump:e2e"
+	cnpgVersion      = "1.26.0"
+	e2eNamespace     = "pgdump-e2e"
+	rustFSAccessKey  = "rustfsadmin"
+	rustFSSecretKey  = "rustfsadmin"
+	rustFSBucket     = "team-backups"
+	rustFSEndpoint   = "http://rustfs.pgdump-e2e.svc.cluster.local:9000"
+	defaultPGVersion = "16"
+)
+
+var postgresVersionsFlag = flag.String("postgres-versions", envDefault("POSTGRES_VERSIONS", defaultPGVersion), "comma-separated PostgreSQL major versions to test")
+
+type suiteState struct {
+	postgresVersions []string
+	verifiedVersions map[string]bool
+}
+
+func InitializeScenario(ctx *godog.ScenarioContext) {
+	state := &suiteState{
+		postgresVersions: parseVersions(*postgresVersionsFlag),
+		verifiedVersions: map[string]bool{},
+	}
+
+	ctx.Step(`^a kind cluster for pgdump e2e tests$`, state.aKindClusterForPgdumpE2ETests)
+	ctx.Step(`^CloudNativePG is installed$`, state.cloudNativePGIsInstalled)
+	ctx.Step(`^RustFS is running as the S3 target$`, state.rustFSIsRunningAsTheS3Target)
+	ctx.Step(`^the pgdump plugin is deployed$`, state.thePgdumpPluginIsDeployed)
+	ctx.Step(`^I run logical backups for the configured PostgreSQL versions$`, state.iRunLogicalBackupsForTheConfiguredPostgreSQLVersions)
+	ctx.Step(`^every PostgreSQL version should have uploaded dumps to RustFS$`, state.everyPostgreSQLVersionShouldHaveUploadedDumpsToRustFS)
+}
+
+func (s *suiteState) aKindClusterForPgdumpE2ETests(ctx context.Context) error {
+	if _, err := command(ctx, "kind", "get", "clusters"); err != nil {
+		return fmt.Errorf("kind CLI is required: %w", err)
+	}
+
+	clusters, err := command(ctx, "kind", "get", "clusters")
+	if err != nil {
+		return err
+	}
+	if !containsLine(clusters, clusterName) {
+		if _, err := command(ctx, "kind", "create", "cluster", "--name", clusterName, "--wait", "120s"); err != nil {
+			return err
+		}
+	}
+
+	if _, err := command(ctx, "kubectl", "cluster-info", "--context", "kind-"+clusterName); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *suiteState) cloudNativePGIsInstalled(ctx context.Context) error {
+	manifest := fmt.Sprintf("https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v%s/cnpg-%s.yaml", cnpgVersion, cnpgVersion)
+	if _, err := command(ctx, "kubectl", "apply", "--server-side", "-f", manifest); err != nil {
+		return err
+	}
+	return waitFor(ctx, 5*time.Minute, func(ctx context.Context) error {
+		_, err := command(ctx, "kubectl", "-n", "cnpg-system", "rollout", "status", "deployment/cnpg-controller-manager", "--timeout=10s")
+		return err
+	})
+}
+
+func (s *suiteState) rustFSIsRunningAsTheS3Target(ctx context.Context) error {
+	if _, err := kubectlApply(ctx, rustFSManifest()); err != nil {
+		return err
+	}
+	if err := waitFor(ctx, 3*time.Minute, func(ctx context.Context) error {
+		_, err := command(ctx, "kubectl", "-n", e2eNamespace, "rollout", "status", "deployment/rustfs", "--timeout=10s")
+		return err
+	}); err != nil {
+		return err
+	}
+
+	return s.runInAWSPod(ctx,
+		"aws", "--endpoint-url", "http://rustfs:9000", "s3api", "create-bucket", "--bucket", rustFSBucket,
+	)
+}
+
+func (s *suiteState) thePgdumpPluginIsDeployed(ctx context.Context) error {
+	if _, err := command(ctx, "docker", "build", "-t", pluginImage, "."); err != nil {
+		return err
+	}
+	if _, err := command(ctx, "kind", "load", "docker-image", pluginImage, "--name", clusterName); err != nil {
+		return err
+	}
+
+	manifest, err := pluginManifest()
+	if err != nil {
+		return err
+	}
+	if _, err := kubectlApply(ctx, manifest); err != nil {
+		return err
+	}
+	return waitFor(ctx, 3*time.Minute, func(ctx context.Context) error {
+		_, err := command(ctx, "kubectl", "-n", "cnpg-system", "rollout", "status", "deployment/cnpg-plugin-pgdump", "--timeout=10s")
+		return err
+	})
+}
+
+func (s *suiteState) iRunLogicalBackupsForTheConfiguredPostgreSQLVersions(ctx context.Context) error {
+	if len(s.postgresVersions) == 0 {
+		return errors.New("no PostgreSQL versions configured")
+	}
+
+	for _, version := range s.postgresVersions {
+		cluster := "pgdump-pg" + version
+		if _, err := kubectlApply(ctx, cnpgClusterManifest(cluster, version)); err != nil {
+			return err
+		}
+		if err := waitForClusterReady(ctx, cluster); err != nil {
+			return err
+		}
+		if err := createSecondDatabase(ctx, cluster); err != nil {
+			return err
+		}
+
+		scheduledBackupName := "logical-" + cluster
+		if _, err := kubectlApply(ctx, scheduledBackupManifest(scheduledBackupName, cluster)); err != nil {
+			return err
+		}
+
+		prefix := fmt.Sprintf("logical/%s/%s/", e2eNamespace, cluster)
+		if err := s.waitForS3Objects(ctx, prefix, 2); err != nil {
+			return err
+		}
+		s.verifiedVersions[version] = true
+	}
+
+	return nil
+}
+
+func (s *suiteState) everyPostgreSQLVersionShouldHaveUploadedDumpsToRustFS() error {
+	for _, version := range s.postgresVersions {
+		if !s.verifiedVersions[version] {
+			return fmt.Errorf("PostgreSQL %s was not verified", version)
+		}
+	}
+	return nil
+}
+
+func waitForClusterReady(ctx context.Context, name string) error {
+	return waitFor(ctx, 10*time.Minute, func(ctx context.Context) error {
+		_, err := command(ctx, "kubectl", "-n", e2eNamespace, "wait", "cluster/"+name, "--for=condition=Ready", "--timeout=20s")
+		return err
+	})
+}
+
+func createSecondDatabase(ctx context.Context, cluster string) error {
+	pod := cluster + "-1"
+	return waitFor(ctx, 3*time.Minute, func(ctx context.Context) error {
+		_, err := command(ctx, "kubectl", "-n", e2eNamespace, "exec", pod, "-c", "postgres", "--", "psql", "-U", "postgres", "-d", "postgres", "-c", "CREATE DATABASE extra;")
+		if err != nil && strings.Contains(err.Error(), "already exists") {
+			return nil
+		}
+		return err
+	})
+}
+
+func (s *suiteState) waitForS3Objects(ctx context.Context, prefix string, want int) error {
+	return waitFor(ctx, 10*time.Minute, func(ctx context.Context) error {
+		output, err := s.runInAWSPodOutput(ctx,
+			"aws", "--endpoint-url", "http://rustfs:9000", "s3api", "list-objects-v2",
+			"--bucket", rustFSBucket,
+			"--prefix", prefix,
+			"--query", "length(Contents[?ends_with(Key, '.dump')])",
+			"--output", "text",
+		)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(output) != fmt.Sprintf("%d", want) {
+			return fmt.Errorf("found %s dump objects under %s, want %d", strings.TrimSpace(output), prefix, want)
+		}
+		return nil
+	})
+}
+
+func (s *suiteState) runInAWSPod(ctx context.Context, args ...string) error {
+	_, err := s.runInAWSPodOutput(ctx, args...)
+	return err
+}
+
+func (s *suiteState) runInAWSPodOutput(ctx context.Context, args ...string) (string, error) {
+	runArgs := []string{
+		"-n", e2eNamespace, "run", "aws-cli", "--rm", "-i", "--restart=Never",
+		"--image", "amazon/aws-cli:2.17.50",
+		"--env", "AWS_ACCESS_KEY_ID=" + rustFSAccessKey,
+		"--env", "AWS_SECRET_ACCESS_KEY=" + rustFSSecretKey,
+		"--env", "AWS_DEFAULT_REGION=us-east-1",
+		"--command", "--",
+	}
+	runArgs = append(runArgs, args...)
+	return command(ctx, "kubectl", runArgs...)
+}
+
+func waitFor(ctx context.Context, timeout time.Duration, fn func(context.Context) error) error {
+	deadline := time.Now().Add(timeout)
+	var last error
+	for time.Now().Before(deadline) {
+		last = fn(ctx)
+		if last == nil {
+			return nil
+		}
+		time.Sleep(5 * time.Second)
+	}
+	return fmt.Errorf("timed out after %s: %w", timeout, last)
+}
+
+func command(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = os.Environ()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	cmd.Dir = repoRoot()
+	if err := cmd.Run(); err != nil {
+		return stdout.String(), fmt.Errorf("%s %s failed: %w\nstdout: %s\nstderr: %s", name, strings.Join(args, " "), err, stdout.String(), stderr.String())
+	}
+	return stdout.String(), nil
+}
+
+func kubectlApply(ctx context.Context, manifest string) (string, error) {
+	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(manifest)
+	cmd.Dir = repoRoot()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return stdout.String(), fmt.Errorf("kubectl apply failed: %w\nstdout: %s\nstderr: %s\nmanifest:\n%s", err, stdout.String(), stderr.String(), manifest)
+	}
+	return stdout.String(), nil
+}
+
+func rustFSManifest() string {
+	return fmt.Sprintf(`
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: %[1]s
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rustfs
+  namespace: %[1]s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rustfs
+  template:
+    metadata:
+      labels:
+        app: rustfs
+    spec:
+      securityContext:
+        fsGroup: 10001
+      containers:
+        - name: rustfs
+          image: rustfs/rustfs:latest
+          ports:
+            - containerPort: 9000
+            - containerPort: 9001
+          env:
+            - name: RUSTFS_ACCESS_KEY
+              value: %[2]s
+            - name: RUSTFS_SECRET_KEY
+              value: %[3]s
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: logs
+              mountPath: /logs
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: logs
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rustfs
+  namespace: %[1]s
+spec:
+  selector:
+    app: rustfs
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: 9000
+    - name: console
+      port: 9001
+      targetPort: 9001
+`, e2eNamespace, rustFSAccessKey, rustFSSecretKey)
+}
+
+func pluginManifest() (string, error) {
+	path := filepath.Join(repoRoot(), "kubernetes", "deployment.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	manifest := strings.ReplaceAll(string(data), "platform/cnpg-plugin-pgdump:latest", pluginImage)
+	manifest = strings.ReplaceAll(manifest, "image: "+pluginImage, "image: "+pluginImage+"\n          imagePullPolicy: Never")
+	manifest = strings.ReplaceAll(manifest, "value: us-east-1", "value: us-east-1")
+	manifest += fmt.Sprintf(`
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backup-s3-credentials
+  namespace: cnpg-system
+type: Opaque
+stringData:
+  endpoint: %s
+  access-key-id: %s
+  secret-access-key: %s
+`, rustFSEndpoint, rustFSAccessKey, rustFSSecretKey)
+	return manifest, nil
+}
+
+func cnpgClusterManifest(cluster, version string) string {
+	return fmt.Sprintf(`
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: %[1]s
+  namespace: %[2]s
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:%[3]s
+  enableSuperuserAccess: true
+  plugins:
+    - name: pgdump-backup.cloudnative-pg.io
+      enabled: true
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+  storage:
+    size: 1Gi
+`, cluster, e2eNamespace, version)
+}
+
+func scheduledBackupManifest(name, cluster string) string {
+	return fmt.Sprintf(`
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: %[1]s
+  namespace: %[2]s
+spec:
+  schedule: "0 0 23 31 12 *"
+  immediate: true
+  method: plugin
+  pluginConfiguration:
+    name: pgdump-backup.cloudnative-pg.io
+    parameters:
+      target_type: s3
+      bucket: %[3]s
+      path: logical
+      retention_days: "30"
+      endpoint_url: %[4]s
+      region: us-east-1
+  cluster:
+    name: %[5]s
+`, name, e2eNamespace, rustFSBucket, rustFSEndpoint, cluster)
+}
+
+func parseVersions(value string) []string {
+	var versions []string
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			versions = append(versions, part)
+		}
+	}
+	return versions
+}
+
+func containsLine(output, line string) bool {
+	for _, candidate := range strings.Split(output, "\n") {
+		if strings.TrimSpace(candidate) == line {
+			return true
+		}
+	}
+	return false
+}
+
+func envDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func repoRoot() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "."
+		}
+		dir = parent
+	}
+}
