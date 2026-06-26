@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine AS builder
+FROM docker.io/library/golang:1.26-alpine AS builder
 
 WORKDIR /src
 RUN apk add --no-cache git
@@ -8,7 +8,7 @@ COPY . .
 ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.version=${VERSION}" -o /out/cnpg-plugin-pgdump .
 
-FROM postgres:16-alpine
+FROM docker.io/library/postgres:16-alpine
 
 COPY --from=builder /out/cnpg-plugin-pgdump /usr/local/bin/cnpg-plugin-pgdump
 USER 65532:65532

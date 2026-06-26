@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/odit-services/cnpg-plugin-pgdump/cmd/plugin"
+	"github.com/odit-services/cnpg-plugin-pgdump/cmd/root"
 )
 
 var version = "dev"
 
 func main() {
-	if err := plugin.New(version).Execute(); err != nil {
+	if err := root.New(version).Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

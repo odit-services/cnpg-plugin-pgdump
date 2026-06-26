@@ -48,9 +48,15 @@ spec:
       containers:
         - name: plugin
           image: platform/cnpg-plugin-pgdump:latest
+          ports:
+            - containerPort: 50051
+              protocol: TCP
           args:
             - plugin
-            - --listen-address=:50051
+            - --server-address=:50051
+            - --server-cert=/server/tls.crt
+            - --server-key=/server/tls.key
+            - --client-cert=/client/ca.crt
           env:
             - name: S3_ENDPOINT
               valueFrom:
@@ -73,9 +79,21 @@ spec:
             - name: S3_REGION
               value: us-east-1
           volumeMounts:
+            - name: server-tls
+              mountPath: /server
+              readOnly: true
+            - name: client-tls
+              mountPath: /client
+              readOnly: true
             - name: tmp
               mountPath: /tmp
       volumes:
+        - name: server-tls
+          secret:
+            secretName: cnpg-plugin-pgdump-server-tls
+        - name: client-tls
+          secret:
+            secretName: cnpg-plugin-pgdump-client-tls
         - name: tmp
           emptyDir: {}
 ---
@@ -84,6 +102,14 @@ kind: Service
 metadata:
   name: cnpg-plugin-pgdump
   namespace: cnpg-system
+  labels:
+    cnpg.io/plugin: pgdump-backup.cloudnative-pg.io
+    cnpg.io/pluginName: pgdump-backup.cloudnative-pg.io
+  annotations:
+    cnpg.io/pluginClientSecret: cnpg-plugin-pgdump-client-tls
+    cnpg.io/pluginPort: "50051"
+    cnpg.io/pluginServerName: cnpg-plugin-pgdump.cnpg-system.svc
+    cnpg.io/pluginServerSecret: cnpg-plugin-pgdump-server-tls
 spec:
   selector:
     app: cnpg-plugin-pgdump
