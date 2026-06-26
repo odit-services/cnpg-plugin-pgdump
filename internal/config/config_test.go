@@ -3,7 +3,7 @@ package config
 import "testing"
 
 func TestParseBackupConfigDefaults(t *testing.T) {
-	cfg, err := ParseBackupConfig(map[string]string{"bucket": "team-backups"}, Config{S3Region: "eu-central-1"})
+	cfg, err := ParseBackupConfig(map[string]string{"bucket": "team-backups"}, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -13,6 +13,16 @@ func TestParseBackupConfigDefaults(t *testing.T) {
 	}
 	if cfg.RetentionDays != 30 {
 		t.Fatalf("retention %d", cfg.RetentionDays)
+	}
+	if cfg.Region != "us-east-1" {
+		t.Fatalf("region %q", cfg.Region)
+	}
+}
+
+func TestParseBackupConfigRegionParameter(t *testing.T) {
+	cfg, err := ParseBackupConfig(map[string]string{"bucket": "team-backups", "region": "eu-central-1"}, Config{})
+	if err != nil {
+		t.Fatal(err)
 	}
 	if cfg.Region != "eu-central-1" {
 		t.Fatalf("region %q", cfg.Region)

@@ -116,7 +116,7 @@ func (s *Server) runBackup(ctx context.Context, cluster cnpgv1.Cluster, backup c
 		return result, err
 	}
 
-	uploader, err := pgbackup.NewS3Uploader(ctx, backupConfig, s.appConfig)
+	uploader, err := pgbackup.NewS3Uploader(ctx, backupConfig)
 	if err != nil {
 		return result, err
 	}

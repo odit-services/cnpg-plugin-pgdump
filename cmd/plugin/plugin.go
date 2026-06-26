@@ -32,11 +32,6 @@ func New(version string) *cobra.Command {
 			return err
 		}
 
-		appConfig.S3Endpoint = withViperDefault("s3-endpoint", appConfig.S3Endpoint)
-		appConfig.S3Region = withViperDefault("s3-region", appConfig.S3Region)
-		appConfig.S3AccessKeyID = withViperDefault("s3-access-key-id", appConfig.S3AccessKeyID)
-		appConfig.S3SecretAccessKey = withViperDefault("s3-secret-access-key", appConfig.S3SecretAccessKey)
-
 		cnpgoperator.RegisterOperatorServer(server, pgoperator.New(store))
 		cnpgreconciler.RegisterReconcilerHooksServer(server, pgreconciler.New(
 			appConfig,
@@ -50,16 +45,8 @@ func New(version string) *cobra.Command {
 
 	cmd.Use = "plugin"
 	cmd.Flags().String("listen-address", "", "Listen address. Use unix:///path for plugin-path compatibility or host:port for TCP")
-	cmd.Flags().String("s3-endpoint", appConfig.S3Endpoint, "Default S3 endpoint URL")
-	cmd.Flags().String("s3-region", appConfig.S3Region, "Default S3 region")
-	cmd.Flags().String("s3-access-key-id", appConfig.S3AccessKeyID, "S3 access key ID")
-	cmd.Flags().String("s3-secret-access-key", appConfig.S3SecretAccessKey, "S3 secret access key")
 
 	_ = viper.BindPFlag("listen-address", cmd.Flags().Lookup("listen-address"))
-	_ = viper.BindPFlag("s3-endpoint", cmd.Flags().Lookup("s3-endpoint"))
-	_ = viper.BindPFlag("s3-region", cmd.Flags().Lookup("s3-region"))
-	_ = viper.BindPFlag("s3-access-key-id", cmd.Flags().Lookup("s3-access-key-id"))
-	_ = viper.BindPFlag("s3-secret-access-key", cmd.Flags().Lookup("s3-secret-access-key"))
 
 	cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
 		if err := translateListenAddress(); err != nil {
@@ -101,12 +88,4 @@ func translateListenAddress() error {
 
 	viper.Set("server-address", strings.TrimPrefix(address, "tcp://"))
 	return nil
-}
-
-func withViperDefault(key, fallback string) string {
-	value := viper.GetString(key)
-	if value == "" {
-		return fallback
-	}
-	return value
 }

@@ -15,13 +15,9 @@ const (
 )
 
 type Config struct {
-	Version           string
-	S3Endpoint        string
-	S3Region          string
-	S3AccessKeyID     string
-	S3SecretAccessKey string
-	DumpTimeout       time.Duration
-	WorkDir           string
+	Version     string
+	DumpTimeout time.Duration
+	WorkDir     string
 }
 
 type BackupConfig struct {
@@ -57,19 +53,10 @@ func FromEnv(version string) Config {
 		workDir = os.TempDir()
 	}
 
-	region := os.Getenv("S3_REGION")
-	if region == "" {
-		region = DefaultRegion
-	}
-
 	return Config{
-		Version:           version,
-		S3Endpoint:        os.Getenv("S3_ENDPOINT"),
-		S3Region:          region,
-		S3AccessKeyID:     os.Getenv("S3_ACCESS_KEY_ID"),
-		S3SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
-		DumpTimeout:       dumpTimeout,
-		WorkDir:           workDir,
+		Version:     version,
+		DumpTimeout: dumpTimeout,
+		WorkDir:     workDir,
 	}
 }
 
@@ -88,8 +75,8 @@ func ParseBackupConfig(parameters map[string]string, defaults Config) (BackupCon
 		Bucket:                parameters["bucket"],
 		Path:                  strings.Trim(parameters["path"], "/"),
 		RetentionDays:         retention,
-		EndpointURL:           withDefault(parameters["endpoint_url"], defaults.S3Endpoint),
-		Region:                withDefault(parameters["region"], defaults.S3Region),
+		EndpointURL:           parameters["endpoint_url"],
+		Region:                withDefault(parameters["region"], DefaultRegion),
 		AccessKeyIDSecret:     secretRef(parameters, "access_key_id_secret", "access-key-id"),
 		SecretAccessKeySecret: secretRef(parameters, "secret_access_key_secret", "secret-access-key"),
 		EndpointURLSecret:     secretRef(parameters, "endpoint_url_secret", "endpoint"),

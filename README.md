@@ -65,14 +65,10 @@ The image is based on `postgres:16-alpine`, so it includes `pg_dump` 16. This is
 Configuration can be set with flags or environment variables:
 
 - `--listen-address`, e.g. `:50051` for TCP or `unix:///plugins` for same-pod socket setups
-- `S3_ENDPOINT` / `--s3-endpoint`, optional default if a backup does not provide `endpoint_url` or `endpoint_url_secret_name`
-- `S3_REGION` / `--s3-region`, optional default if a backup does not provide `region` or `region_secret_name`
-- `S3_ACCESS_KEY_ID` / `--s3-access-key-id`, optional fallback if a backup does not provide `access_key_id_secret_name`
-- `S3_SECRET_ACCESS_KEY` / `--s3-secret-access-key`, optional fallback if a backup does not provide `secret_access_key_secret_name`
 - `PGDUMP_TIMEOUT`, default `12h`
 - `PGDUMP_WORKDIR`, default OS temp dir
 
-Prefer per-backup S3 credential Secrets over Deployment-wide S3 environment variables.
+S3 configuration belongs to the `ScheduledBackup`. The plugin does not read S3 settings from Deployment environment variables.
 
 ## ScheduledBackup
 
