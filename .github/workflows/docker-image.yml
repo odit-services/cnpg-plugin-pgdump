@@ -69,6 +69,11 @@ jobs:
           image="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
           sed "s|image: platform/cnpg-plugin-pgdump:latest|image: ${image}|" \
             kubernetes/deployment.yaml > dist/cnpg-plugin-pgdump-deployment.yaml
+          cp -R kubernetes/quickstart dist/quickstart
+          sed -i "s|newTag: main|newTag: ${IMAGE_TAG}|" dist/quickstart/kustomization.yaml
+          sed -i "s|branch: main|tag: ${GITHUB_REF_NAME}|" dist/quickstart/flux/gitrepository.yaml
+          sed -i "s|targetRevision: main|targetRevision: ${GITHUB_REF_NAME}|" dist/quickstart/argocd/application.yaml
+          tar -C dist -czf dist/cnpg-plugin-pgdump-quickstart.tar.gz quickstart
 
       - name: Extract release notes
         if: startsWith(github.ref, 'refs/tags/')
@@ -91,6 +96,7 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" \
             dist/cnpg-plugin-pgdump-deployment.yaml \
+            dist/cnpg-plugin-pgdump-quickstart.tar.gz \
             --title "${GITHUB_REF_NAME}" \
             --notes-file dist/release-notes.md \
             --verify-tag

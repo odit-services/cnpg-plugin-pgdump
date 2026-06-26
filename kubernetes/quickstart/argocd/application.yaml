@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cnpg-plugin-pgdump
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/odit-services/cnpg-plugin-pgdump.git
+    targetRevision: main
+    path: kubernetes/quickstart
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cnpg-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

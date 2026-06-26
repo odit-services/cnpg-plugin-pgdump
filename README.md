@@ -158,6 +158,8 @@ kubectl -n cnpg-system set image deployment/cnpg-plugin-pgdump plugin=ghcr.io/od
 
 Use a SemVer tag instead of `main` for production, for example `ghcr.io/odit-services/cnpg-plugin-pgdump:1.2.3`. The GitHub Actions workflow publishes branch, SemVer, and SHA tags to GHCR.
 
+Release pages also attach a rendered `cnpg-plugin-pgdump-deployment.yaml` and `cnpg-plugin-pgdump-quickstart.tar.gz`. The quickstart archive contains Kustomize, Flux, and Argo CD examples pinned to the release tag.
+
 Enable the plugin on a CNPG cluster:
 
 ```yaml

@@ -15,6 +15,8 @@ FROM docker.io/library/postgres:17-alpine AS postgres17
 
 FROM docker.io/library/postgres:18-alpine
 
+LABEL org.opencontainers.image.source = "https://github.com/odit-services/cnpg-plugin-pgdump"
+
 COPY --from=builder /out/cnpg-plugin-pgdump /usr/local/bin/cnpg-plugin-pgdump
 COPY --from=postgres14 /usr/local/bin/pg_dump /usr/local/bin/pg_dump-14
 COPY --from=postgres15 /usr/local/bin/pg_dump /usr/local/bin/pg_dump-15

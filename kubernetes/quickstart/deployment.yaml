@@ -1,0 +1,98 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cnpg-plugin-pgdump
+  namespace: cnpg-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cnpg-plugin-pgdump
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters", "backups"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cnpg-plugin-pgdump
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cnpg-plugin-pgdump
+subjects:
+  - kind: ServiceAccount
+    name: cnpg-plugin-pgdump
+    namespace: cnpg-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cnpg-plugin-pgdump
+  namespace: cnpg-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cnpg-plugin-pgdump
+  template:
+    metadata:
+      labels:
+        app: cnpg-plugin-pgdump
+    spec:
+      serviceAccountName: cnpg-plugin-pgdump
+      containers:
+        - name: plugin
+          image: platform/cnpg-plugin-pgdump:latest
+          ports:
+            - containerPort: 50051
+              protocol: TCP
+          args:
+            - plugin
+            - --server-address=:50051
+            - --server-cert=/server/tls.crt
+            - --server-key=/server/tls.key
+            - --client-cert=/client/ca.crt
+          volumeMounts:
+            - name: server-tls
+              mountPath: /server
+              readOnly: true
+            - name: client-tls
+              mountPath: /client
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: server-tls
+          secret:
+            secretName: cnpg-plugin-pgdump-server-tls
+        - name: client-tls
+          secret:
+            secretName: cnpg-plugin-pgdump-client-tls
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cnpg-plugin-pgdump
+  namespace: cnpg-system
+  labels:
+    cnpg.io/plugin: pgdump-backup.cloudnative-pg.io
+    cnpg.io/pluginName: pgdump-backup.cloudnative-pg.io
+  annotations:
+    cnpg.io/pluginClientSecret: cnpg-plugin-pgdump-client-tls
+    cnpg.io/pluginPort: "50051"
+    cnpg.io/pluginServerName: cnpg-plugin-pgdump.cnpg-system.svc
+    cnpg.io/pluginServerSecret: cnpg-plugin-pgdump-server-tls
+spec:
+  selector:
+    app: cnpg-plugin-pgdump
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 50051

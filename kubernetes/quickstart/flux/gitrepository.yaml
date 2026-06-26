@@ -1,0 +1,10 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: cnpg-plugin-pgdump
+  namespace: flux-system
+spec:
+  interval: 10m
+  url: https://github.com/odit-services/cnpg-plugin-pgdump.git
+  ref:
+    branch: main
