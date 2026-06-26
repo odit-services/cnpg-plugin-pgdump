@@ -4,6 +4,20 @@ CNPG-I plugin for CloudNativePG v1.26+ that performs logical PostgreSQL backups 
 
 The plugin uses `ReconcilerHooks.Pre` for `Backup` reconciliation. On success it returns `BEHAVIOR_TERMINATE`, so the CNPG operator skips its physical backup flow. On failure it logs/stores the error and returns `BEHAVIOR_CONTINUE`.
 
+## Supported PostgreSQL Versions
+
+The image bundles `pg_dump` from these PostgreSQL major versions:
+
+| Version | pg_dump binary |
+|---------|----------------|
+| 14      | `pg_dump-14`   |
+| 15      | `pg_dump-15`   |
+| 16      | `pg_dump-16`   |
+| 17      | `pg_dump-17`   |
+| 18      | `pg_dump-18`   |
+
+At backup time the plugin reads `SHOW server_version_num` and selects the matching `pg_dump` binary — guaranteeing same-major restore compatibility. Unsupported versions fail with a clear error.
+
 ## Quickstart
 
 Prerequisites:
@@ -282,7 +296,7 @@ go test -tags=e2e ./test/e2e -count=1 -timeout=45m -postgres-versions="14,15,16,
 
 ## Runtime
 
-The image bundles `pg_dump` 14, 15, 16, 17, and 18. At backup time the plugin reads `SHOW server_version_num` and uses the matching `pg_dump` major version, so same-major restores remain supported. Unsupported server versions fail with a clear error.
+See [Supported PostgreSQL Versions](#supported-postgresql-versions) for the bundled `pg_dump` binaries.
 
 Configuration can be set with flags or environment variables:
 

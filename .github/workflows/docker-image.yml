@@ -88,6 +88,10 @@ jobs:
           if [ ! -s dist/release-notes.md ]; then
             cp CHANGELOG.md dist/release-notes.md
           fi
+          cat >> dist/release-notes.md <<'EOF'
+
+**Bundled pg_dump versions:** 14, 15, 16, 17, 18
+EOF
 
       - name: Create GitHub release
         if: startsWith(github.ref, 'refs/tags/')
