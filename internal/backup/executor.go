@@ -19,34 +19,40 @@ type Connection struct {
 	Port     int
 	User     string
 	Password string
+	Major    string
 }
 
 type DumpExecutor interface {
+	ServerMajor(ctx context.Context, conn Connection) (string, error)
 	ListDatabases(ctx context.Context, conn Connection) ([]string, error)
 	Dump(ctx context.Context, conn Connection, database, backupID, workDir string) (string, int64, error)
 }
 
 type PGDumpExecutor struct {
-	Binary  string
-	Timeout time.Duration
+	BinaryTemplate string
+	Timeout        time.Duration
 }
 
 func NewPGDumpExecutor(timeout time.Duration) *PGDumpExecutor {
-	return &PGDumpExecutor{Binary: "pg_dump", Timeout: timeout}
+	return &PGDumpExecutor{BinaryTemplate: "/usr/local/bin/pg_dump-%s", Timeout: timeout}
+}
+
+func (e *PGDumpExecutor) ServerMajor(ctx context.Context, conn Connection) (string, error) {
+	db, err := openPostgres(ctx, conn)
+	if err != nil {
+		return "", err
+	}
+	defer db.Close()
+
+	var versionNum int
+	if err := db.QueryRowContext(ctx, "SHOW server_version_num").Scan(&versionNum); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%d", versionNum/10000), nil
 }
 
 func (e *PGDumpExecutor) ListDatabases(ctx context.Context, conn Connection) ([]string, error) {
-	dsn := url.URL{
-		Scheme: "postgres",
-		User:   url.UserPassword(conn.User, conn.Password),
-		Host:   fmt.Sprintf("%s:%d", conn.Host, conn.Port),
-		Path:   "postgres",
-	}
-	query := dsn.Query()
-	query.Set("sslmode", "disable")
-	dsn.RawQuery = query.Encode()
-
-	db, err := sql.Open("postgres", dsn.String())
+	db, err := openPostgres(ctx, conn)
 	if err != nil {
 		return nil, err
 	}
@@ -70,6 +76,28 @@ func (e *PGDumpExecutor) ListDatabases(ctx context.Context, conn Connection) ([]
 	return databases, rows.Err()
 }
 
+func openPostgres(ctx context.Context, conn Connection) (*sql.DB, error) {
+	dsn := url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(conn.User, conn.Password),
+		Host:   fmt.Sprintf("%s:%d", conn.Host, conn.Port),
+		Path:   "postgres",
+	}
+	query := dsn.Query()
+	query.Set("sslmode", "disable")
+	dsn.RawQuery = query.Encode()
+
+	db, err := sql.Open("postgres", dsn.String())
+	if err != nil {
+		return nil, err
+	}
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
 func (e *PGDumpExecutor) Dump(ctx context.Context, conn Connection, database, backupID, workDir string) (string, int64, error) {
 	if err := os.MkdirAll(workDir, 0o700); err != nil {
 		return "", 0, err
@@ -80,7 +108,12 @@ func (e *PGDumpExecutor) Dump(ctx context.Context, conn Connection, database, ba
 
 	fileName := fmt.Sprintf("%s-%s.dump", backupID, sanitizeName(database))
 	path := filepath.Join(workDir, fileName)
-	cmd := exec.CommandContext(ctx, e.Binary,
+	binary, err := e.binaryForConnection(ctx, conn)
+	if err != nil {
+		return "", 0, err
+	}
+
+	cmd := exec.CommandContext(ctx, binary,
 		"-Fc",
 		"-h", conn.Host,
 		"-p", fmt.Sprintf("%d", conn.Port),
@@ -102,6 +135,22 @@ func (e *PGDumpExecutor) Dump(ctx context.Context, conn Connection, database, ba
 	}
 
 	return path, stat.Size(), nil
+}
+
+func (e *PGDumpExecutor) binaryForConnection(ctx context.Context, conn Connection) (string, error) {
+	major := conn.Major
+	if major == "" {
+		var err error
+		major, err = e.ServerMajor(ctx, conn)
+		if err != nil {
+			return "", err
+		}
+	}
+	binary := fmt.Sprintf(e.BinaryTemplate, major)
+	if _, err := os.Stat(binary); err != nil {
+		return "", fmt.Errorf("unsupported PostgreSQL major version %s: pg_dump binary %s is not available", major, binary)
+	}
+	return binary, nil
 }
 
 func sanitizeName(value string) string {

@@ -49,7 +49,7 @@ task e2e POSTGRES_VERSIONS=16
 Run for multiple versions:
 
 ```sh
-make e2e POSTGRES_VERSIONS=14,15,16,17
+make e2e POSTGRES_VERSIONS=14,15,16,17,18
 ```
 
 Run multiple versions concurrently:
@@ -61,12 +61,12 @@ make e2e POSTGRES_VERSIONS=14,15,16 E2E_PARALLELISM=3
 Equivalent direct command:
 
 ```sh
-go test -tags=e2e ./test/e2e -count=1 -timeout=45m -postgres-versions="14,15,16,17" -parallelism=2
+go test -tags=e2e ./test/e2e -count=1 -timeout=45m -postgres-versions="14,15,16,17,18" -parallelism=2
 ```
 
 ## Runtime
 
-The image is based on `postgres:16-alpine`, so it includes `pg_dump` 16. This is the pragmatic v1 approach; exact client/server version extraction from the cluster image is not implemented.
+The image bundles `pg_dump` 14, 15, 16, 17, and 18. At backup time the plugin reads `SHOW server_version_num` and uses the matching `pg_dump` major version, so same-major restores remain supported. Unsupported server versions fail with a clear error.
 
 Configuration can be set with flags or environment variables:
 

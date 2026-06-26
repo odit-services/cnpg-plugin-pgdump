@@ -102,6 +102,10 @@ func (s *Server) runBackup(ctx context.Context, cluster cnpgv1.Cluster, backup c
 		User:     user,
 		Password: password,
 	}
+	conn.Major, err = s.executor.ServerMajor(ctx, conn)
+	if err != nil {
+		return result, err
+	}
 
 	databases, err := s.executor.ListDatabases(ctx, conn)
 	if err != nil {
