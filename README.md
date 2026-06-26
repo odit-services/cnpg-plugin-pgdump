@@ -9,9 +9,145 @@ The plugin uses `ReconcilerHooks.Pre` for `Backup` reconciliation. On success it
 Prerequisites:
 
 - CloudNativePG v1.26+ is installed.
-- The CNPG operator is configured to load `pgdump-backup.cloudnative-pg.io` via `INCLUDE_PLUGINS`.
-- CNPG-I plugin TLS Secrets referenced by `kubernetes/deployment.yaml` exist in `cnpg-system`.
+- `kubectl` is available locally.
+- cert-manager is installed, or `openssl` is available for the manual fallback below.
 - An S3-compatible bucket exists.
+
+Configure the CNPG operator to discover this plugin:
+
+```sh
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cnpg-controller-manager-config
+  namespace: cnpg-system
+data:
+  INCLUDE_PLUGINS: pgdump-backup.cloudnative-pg.io
+EOF
+kubectl -n cnpg-system rollout restart deployment/cnpg-controller-manager
+kubectl -n cnpg-system rollout status deployment/cnpg-controller-manager
+```
+
+Create the CNPG-I mTLS Secrets referenced by `kubernetes/deployment.yaml`.
+
+Recommended cert-manager setup:
+
+```sh
+kubectl apply -f - <<'EOF'
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: cnpg-plugin-pgdump-selfsigned
+  namespace: cnpg-system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: cnpg-plugin-pgdump-ca
+  namespace: cnpg-system
+spec:
+  secretName: cnpg-plugin-pgdump-ca
+  isCA: true
+  commonName: cnpg-plugin-pgdump-ca
+  duration: 8760h
+  renewBefore: 720h
+  issuerRef:
+    name: cnpg-plugin-pgdump-selfsigned
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: cnpg-plugin-pgdump-ca
+  namespace: cnpg-system
+spec:
+  ca:
+    secretName: cnpg-plugin-pgdump-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: cnpg-plugin-pgdump-server-tls
+  namespace: cnpg-system
+spec:
+  secretName: cnpg-plugin-pgdump-server-tls
+  duration: 2160h
+  renewBefore: 360h
+  issuerRef:
+    name: cnpg-plugin-pgdump-ca
+  commonName: cnpg-plugin-pgdump.cnpg-system.svc
+  dnsNames:
+    - cnpg-plugin-pgdump
+    - cnpg-plugin-pgdump.cnpg-system
+    - cnpg-plugin-pgdump.cnpg-system.svc
+    - cnpg-plugin-pgdump.cnpg-system.svc.cluster.local
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: cnpg-plugin-pgdump-client-tls
+  namespace: cnpg-system
+spec:
+  secretName: cnpg-plugin-pgdump-client-tls
+  duration: 2160h
+  renewBefore: 360h
+  issuerRef:
+    name: cnpg-plugin-pgdump-ca
+  commonName: cnpg-plugin-pgdump-client
+EOF
+```
+
+Manual OpenSSL fallback:
+
+```sh
+tmpdir="$(mktemp -d)"
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout "${tmpdir}/ca.key" \
+  -out "${tmpdir}/ca.crt" \
+  -subj "/CN=cnpg-plugin-pgdump-ca" \
+  -days 365
+openssl req -newkey rsa:2048 -nodes \
+  -keyout "${tmpdir}/server.key" \
+  -out "${tmpdir}/server.csr" \
+  -subj "/CN=cnpg-plugin-pgdump.cnpg-system.svc"
+printf "subjectAltName=DNS:cnpg-plugin-pgdump,DNS:cnpg-plugin-pgdump.cnpg-system,DNS:cnpg-plugin-pgdump.cnpg-system.svc,DNS:cnpg-plugin-pgdump.cnpg-system.svc.cluster.local" > "${tmpdir}/server.ext"
+openssl x509 -req \
+  -in "${tmpdir}/server.csr" \
+  -CA "${tmpdir}/ca.crt" \
+  -CAkey "${tmpdir}/ca.key" \
+  -CAcreateserial \
+  -out "${tmpdir}/server.crt" \
+  -days 365 \
+  -extfile "${tmpdir}/server.ext"
+openssl req -newkey rsa:2048 -nodes \
+  -keyout "${tmpdir}/client.key" \
+  -out "${tmpdir}/client.csr" \
+  -subj "/CN=cnpg-plugin-pgdump-client"
+openssl x509 -req \
+  -in "${tmpdir}/client.csr" \
+  -CA "${tmpdir}/ca.crt" \
+  -CAkey "${tmpdir}/ca.key" \
+  -CAcreateserial \
+  -out "${tmpdir}/client.crt" \
+  -days 365
+kubectl -n cnpg-system create secret generic cnpg-plugin-pgdump-server-tls \
+  --type=kubernetes.io/tls \
+  --from-file=tls.crt="${tmpdir}/server.crt" \
+  --from-file=tls.key="${tmpdir}/server.key" \
+  --from-file=ca.crt="${tmpdir}/ca.crt" \
+  --dry-run=client -o yaml |
+  kubectl apply -f -
+kubectl -n cnpg-system create secret generic cnpg-plugin-pgdump-client-tls \
+  --type=kubernetes.io/tls \
+  --from-file=tls.crt="${tmpdir}/client.crt" \
+  --from-file=tls.key="${tmpdir}/client.key" \
+  --from-file=ca.crt="${tmpdir}/ca.crt" \
+  --dry-run=client -o yaml |
+  kubectl apply -f -
+rm -rf "${tmpdir}"
+```
 
 Deploy the plugin from GHCR:
 
