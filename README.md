@@ -413,5 +413,5 @@ Object keys are written as:
 
 - The plugin connects through the CNPG read service: `<cluster>-r.<namespace>.svc:5432`.
 - Credentials are read from the CNPG application secret: `<cluster>-app`.
-- Databases are discovered with `SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate`.
+- Databases are discovered with `SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate AND has_database_privilege(datname, 'CONNECT')`, so databases the configured role cannot connect to are skipped.
 - Retention deletes objects whose backup timestamp in the filename is older than `retention_days`.

@@ -4,9 +4,16 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestListDatabasesQueryRequiresConnectPrivilege(t *testing.T) {
+	if !strings.Contains(listDatabasesQuery, "has_database_privilege(datname, 'CONNECT')") {
+		t.Fatalf("database discovery query does not require CONNECT privilege: %s", listDatabasesQuery)
+	}
+}
 
 func TestBinaryForConnectionUsesServerMajor(t *testing.T) {
 	dir := t.TempDir()

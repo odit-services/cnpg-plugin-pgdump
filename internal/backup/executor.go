@@ -33,6 +33,8 @@ type PGDumpExecutor struct {
 	Timeout        time.Duration
 }
 
+const listDatabasesQuery = "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate AND has_database_privilege(datname, 'CONNECT') ORDER BY datname"
+
 func NewPGDumpExecutor(timeout time.Duration) *PGDumpExecutor {
 	return &PGDumpExecutor{BinaryTemplate: "/usr/local/bin/pg_dump-%s", Timeout: timeout}
 }
@@ -58,7 +60,7 @@ func (e *PGDumpExecutor) ListDatabases(ctx context.Context, conn Connection) ([]
 	}
 	defer db.Close()
 
-	rows, err := db.QueryContext(ctx, "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname")
+	rows, err := db.QueryContext(ctx, listDatabasesQuery)
 	if err != nil {
 		return nil, err
 	}
