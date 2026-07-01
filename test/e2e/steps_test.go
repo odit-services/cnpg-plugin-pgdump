@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	cnpgv1 "github.com/cloudnative-pg/api/pkg/api/v1"
 	"github.com/cucumber/godog"
 )
 
@@ -417,12 +418,16 @@ func seedSampleData(ctx context.Context, cluster string) error {
 
 func (s *suiteState) waitForBackup(ctx context.Context, cluster string) error {
 	return waitFor(ctx, 2*time.Minute, func(ctx context.Context) error {
-		out, err := command(ctx, "kubectl", "-n", e2eNamespace, "get", "backup", "-l", "cnpg.io/cluster="+cluster, "-o", "name")
+		out, err := command(ctx, "kubectl", "-n", e2eNamespace, "get", "backup", "-l", "cnpg.io/cluster="+cluster, "-o", "jsonpath={range .items[*]}{.status.phase}{\"\\n\"}{end}")
 		if err != nil {
 			return err
 		}
-		if strings.TrimSpace(out) == "" {
+		phase := strings.TrimSpace(out)
+		if phase == "" {
 			return fmt.Errorf("no backup resource yet")
+		}
+		if !containsLine(out, string(cnpgv1.BackupPhaseCompleted)) {
+			return fmt.Errorf("backup phase %q, want %q", phase, cnpgv1.BackupPhaseCompleted)
 		}
 		return nil
 	})

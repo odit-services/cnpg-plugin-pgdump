@@ -15,20 +15,28 @@ import (
 	pgbackup "github.com/odit-services/cnpg-plugin-pgdump/internal/backup"
 	"github.com/odit-services/cnpg-plugin-pgdump/internal/config"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
+
+var backupsResource = schema.GroupVersionResource{Group: "postgresql.cnpg.io", Version: "v1", Resource: "backups"}
 
 type Server struct {
 	cnpgreconciler.UnimplementedReconcilerHooksServer
 	appConfig config.Config
 	executor  pgbackup.DumpExecutor
 	kube      kubernetes.Interface
+	dynamic   dynamic.Interface
 	store     *pgbackup.Store
 }
 
-func New(appConfig config.Config, executor pgbackup.DumpExecutor, kube kubernetes.Interface, store *pgbackup.Store) *Server {
-	return &Server{appConfig: appConfig, executor: executor, kube: kube, store: store}
+func New(appConfig config.Config, executor pgbackup.DumpExecutor, kube kubernetes.Interface, dynamic dynamic.Interface, store *pgbackup.Store) *Server {
+	return &Server{appConfig: appConfig, executor: executor, kube: kube, dynamic: dynamic, store: store}
 }
 
 func (s *Server) GetCapabilities(context.Context, *cnpgreconciler.ReconcilerHooksCapabilitiesRequest) (*cnpgreconciler.ReconcilerHooksCapabilitiesResult, error) {
@@ -61,7 +69,16 @@ func (s *Server) Pre(ctx context.Context, request *cnpgreconciler.ReconcilerHook
 	parameters := extractParameters(request.GetResourceDefinition(), backup.Spec.PluginConfiguration)
 	backupConfig, err := config.ParseBackupConfig(parameters, s.appConfig)
 	if err != nil {
-		s.recordError(clusterKey(cluster.Namespace, cluster.Name), backupID(backup, time.Now().UTC()), err)
+		result := pgbackup.Result{
+			BackupID:     backupID(backup, time.Now().UTC()),
+			StartedAt:    time.Now().UTC(),
+			StoppedAt:    time.Now().UTC(),
+			ErrorMessage: err.Error(),
+		}
+		s.store.Set(clusterKey(cluster.Namespace, cluster.Name), result)
+		if statusErr := s.updateBackupStatus(ctx, backup, result, cnpgv1.BackupPhaseFailed); statusErr != nil {
+			logger.Error(statusErr, "Cannot update Backup status")
+		}
 		logger.Error(err, "Invalid backup configuration")
 		return continueResult(), nil
 	}
@@ -70,13 +87,58 @@ func (s *Server) Pre(ctx context.Context, request *cnpgreconciler.ReconcilerHook
 	if err != nil {
 		result.ErrorMessage = err.Error()
 		s.store.Set(clusterKey(cluster.Namespace, cluster.Name), result)
+		if statusErr := s.updateBackupStatus(ctx, backup, result, cnpgv1.BackupPhaseFailed); statusErr != nil {
+			logger.Error(statusErr, "Cannot update Backup status")
+		}
 		logger.Error(err, "Logical backup failed")
 		return continueResult(), nil
 	}
 
 	s.store.Set(clusterKey(cluster.Namespace, cluster.Name), result)
+	if err := s.updateBackupStatus(ctx, backup, result, cnpgv1.BackupPhaseCompleted); err != nil {
+		logger.Error(err, "Cannot update Backup status")
+		return continueResult(), nil
+	}
 	logger.Info("Logical backup completed", "backupID", result.BackupID, "size", result.LastBackupSize, "databases", result.DatabasesBackedUp)
 	return terminateResult(), nil
+}
+
+func (s *Server) updateBackupStatus(ctx context.Context, backup cnpgv1.Backup, result pgbackup.Result, phase cnpgv1.BackupPhase) error {
+	if s.dynamic == nil {
+		return fmt.Errorf("dynamic kubernetes client is not configured")
+	}
+
+	stoppedAt := result.StoppedAt
+	if stoppedAt.IsZero() {
+		stoppedAt = time.Now().UTC()
+	}
+	status := map[string]any{
+		"phase":                      string(phase),
+		"method":                     string(cnpgv1.BackupMethodPlugin),
+		"backupId":                   result.BackupID,
+		"startedAt":                  metav1.NewTime(result.StartedAt).Format(time.RFC3339),
+		"stoppedAt":                  metav1.NewTime(stoppedAt).Format(time.RFC3339),
+		"reconciliationTerminatedAt": metav1.NewTime(stoppedAt).Format(time.RFC3339),
+		"pluginMetadata":             map[string]string{"pluginName": config.PluginName},
+	}
+	if result.StartedAt.IsZero() {
+		delete(status, "startedAt")
+	}
+	if result.ErrorMessage != "" {
+		status["error"] = result.ErrorMessage
+		status["commandError"] = result.ErrorMessage
+	}
+
+	patch := &unstructured.Unstructured{Object: map[string]any{"status": status}}
+	patchData, err := patch.MarshalJSON()
+	if err != nil {
+		return err
+	}
+	_, err = s.dynamic.Resource(backupsResource).Namespace(backup.Namespace).Patch(ctx, backup.Name, types.MergePatchType, patchData, metav1.PatchOptions{}, "status")
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 func (s *Server) Post(context.Context, *cnpgreconciler.ReconcilerHooksRequest) (*cnpgreconciler.ReconcilerHooksResult, error) {
@@ -228,15 +290,6 @@ func backupUserSecretName(clusterName, backupUser string) string {
 	default:
 		return clusterName + "-" + backupUser
 	}
-}
-
-func (s *Server) recordError(clusterKey, id string, err error) {
-	s.store.Set(clusterKey, pgbackup.Result{
-		BackupID:     id,
-		StartedAt:    time.Now().UTC(),
-		StoppedAt:    time.Now().UTC(),
-		ErrorMessage: err.Error(),
-	})
 }
 
 func clusterKey(namespace, name string) string {

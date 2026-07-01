@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -27,7 +28,7 @@ func New(version string) *cobra.Command {
 	identityServer := pgidentity.New(appConfig.Version)
 
 	cmd := pluginhttp.CreateMainCmd(identityServer, func(server *grpc.Server) error {
-		kube, err := kubeClient()
+		kube, dynamicClient, err := kubeClients()
 		if err != nil {
 			return err
 		}
@@ -37,6 +38,7 @@ func New(version string) *cobra.Command {
 			appConfig,
 			pgbackup.NewPGDumpExecutor(appConfig.DumpTimeout),
 			kube,
+			dynamicClient,
 			store,
 		))
 		cnpgbackup.RegisterBackupServer(server, pgbackup.NewService())
@@ -58,12 +60,20 @@ func New(version string) *cobra.Command {
 	return cmd
 }
 
-func kubeClient() (kubernetes.Interface, error) {
+func kubeClients() (kubernetes.Interface, dynamic.Interface, error) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
-		return nil, fmt.Errorf("create in-cluster kubernetes config: %w", err)
+		return nil, nil, fmt.Errorf("create in-cluster kubernetes config: %w", err)
 	}
-	return kubernetes.NewForConfig(cfg)
+	kube, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	dynamicClient, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return kube, dynamicClient, nil
 }
 
 func translateListenAddress() error {
