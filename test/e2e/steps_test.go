@@ -266,7 +266,7 @@ func (s *suiteState) runLogicalBackupForVersion(ctx context.Context, version str
 	if err := s.waitForBackup(ctx, cluster); err != nil {
 		return fmt.Errorf("PostgreSQL %s wait for backup: %w", version, err)
 	}
-	if err := s.waitForS3Objects(ctx, prefix, 2); err != nil {
+	if err := s.waitForS3Objects(ctx, prefix, 3); err != nil {
 		return fmt.Errorf("PostgreSQL %s wait for dumps: %w", version, err)
 	}
 
@@ -828,6 +828,7 @@ spec:
     name: pgdump-backup.cloudnative-pg.io
     parameters:
       target_type: s3
+      backup_user: postgres
       bucket_secret_name: backup-s3-credentials
       bucket_secret_key: bucket
       path: logical

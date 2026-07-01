@@ -87,13 +87,17 @@ func (s *Server) runBackup(ctx context.Context, cluster cnpgv1.Cluster, backup c
 	now := time.Now().UTC()
 	id := backupID(backup, now)
 	result := pgbackup.Result{BackupID: id, StartedAt: now}
+	backupUser := backupConfig.BackupUser
+	if backupUser == "" {
+		backupUser = config.DefaultBackupUser
+	}
 
-	password, user, err := s.readApplicationSecret(ctx, cluster.Namespace, cluster.Name)
+	password, user, err := s.readBackupUserSecret(ctx, cluster.Namespace, cluster.Name, backupUser)
 	if err != nil {
 		return result, err
 	}
 	if user == "" {
-		user = "app"
+		user = backupUser
 	}
 
 	conn := pgbackup.Connection{
@@ -107,7 +111,7 @@ func (s *Server) runBackup(ctx context.Context, cluster cnpgv1.Cluster, backup c
 		return result, err
 	}
 
-	databases, err := s.executor.ListDatabases(ctx, conn)
+	databases, err := s.executor.ListDatabases(ctx, conn, backupConfig.SkipInaccessible)
 	if err != nil {
 		return result, err
 	}
@@ -201,18 +205,29 @@ func (s *Server) secretValue(ctx context.Context, namespace string, ref config.S
 	return string(value), nil
 }
 
-func (s *Server) readApplicationSecret(ctx context.Context, namespace, clusterName string) (password, user string, err error) {
+func (s *Server) readBackupUserSecret(ctx context.Context, namespace, clusterName, backupUser string) (password, user string, err error) {
 	if s.kube == nil {
 		return "", "", fmt.Errorf("kubernetes client is not configured")
 	}
 
-	secretName := clusterName + cnpgv1.ApplicationUserSecretSuffix
+	secretName := backupUserSecretName(clusterName, backupUser)
 	secret, err := s.kube.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
 	if err != nil {
 		return "", "", err
 	}
 
 	return string(secret.Data[corev1.BasicAuthPasswordKey]), string(secret.Data[corev1.BasicAuthUsernameKey]), nil
+}
+
+func backupUserSecretName(clusterName, backupUser string) string {
+	switch backupUser {
+	case "", config.DefaultBackupUser:
+		return clusterName + cnpgv1.ApplicationUserSecretSuffix
+	case "postgres":
+		return clusterName + cnpgv1.SuperUserSecretSuffix
+	default:
+		return clusterName + "-" + backupUser
+	}
 }
 
 func (s *Server) recordError(clusterKey, id string, err error) {

@@ -9,9 +9,15 @@ import (
 	"time"
 )
 
-func TestListDatabasesQueryRequiresConnectPrivilege(t *testing.T) {
-	if !strings.Contains(listDatabasesQuery, "has_database_privilege(datname, 'CONNECT')") {
-		t.Fatalf("database discovery query does not require CONNECT privilege: %s", listDatabasesQuery)
+func TestListDatabasesQueryDoesNotSkipInaccessibleByDefault(t *testing.T) {
+	if strings.Contains(listDatabasesQuery, "has_database_privilege") {
+		t.Fatalf("default database discovery query should not skip inaccessible databases: %s", listDatabasesQuery)
+	}
+}
+
+func TestListAccessibleDatabasesQueryRequiresConnectPrivilege(t *testing.T) {
+	if !strings.Contains(listAccessibleDatabasesQuery, "has_database_privilege(datname, 'CONNECT')") {
+		t.Fatalf("accessible database discovery query does not require CONNECT privilege: %s", listAccessibleDatabasesQuery)
 	}
 }
 

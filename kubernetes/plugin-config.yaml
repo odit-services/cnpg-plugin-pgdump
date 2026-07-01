@@ -35,6 +35,8 @@ spec:
     name: pgdump-backup.cloudnative-pg.io
     parameters:
       target_type: s3
+      backup_user: app
+      skip_inaccessible_databases: "false"
       bucket: team-backups
       path: logical
       object_key_template: "{namespace}/{cluster}/{database}/{backup_id}.dump"

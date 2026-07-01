@@ -215,6 +215,8 @@ spec:
     name: pgdump-backup.cloudnative-pg.io
     parameters:
       target_type: s3
+      backup_user: app
+      skip_inaccessible_databases: "false"
       bucket: team-backups
       path: logical
       retention_days: "30"
@@ -321,6 +323,8 @@ spec:
     name: pgdump-backup.cloudnative-pg.io
     parameters:
       target_type: s3
+      backup_user: app
+      skip_inaccessible_databases: "false"
       bucket: team-backups
       path: logical
       retention_days: "30"
@@ -361,6 +365,8 @@ spec:
     name: pgdump-backup.cloudnative-pg.io
     parameters:
       target_type: s3
+      backup_user: app
+      skip_inaccessible_databases: "false"
       bucket: team-backups
       path: logical
       object_key_template: "{namespace}/{cluster}/{database}/{backup_id}.dump"
@@ -385,6 +391,10 @@ Secret ref parameter defaults:
 - `secret_access_key_secret_key`: `secret-access-key`
 
 The bucket can be set directly via `bucket` or read from a Kubernetes Secret via `bucket_secret_name` / `bucket_secret_key` (default key: `bucket`). This is useful for tools like [s3ops](https://github.com/odit-services/s3ops) that manage per-service S3 configuration. When both are specified, the secret value takes precedence.
+
+`backup_user` controls which PostgreSQL role runs database discovery and `pg_dump`. It defaults to `app`. The plugin reads credentials from CNPG-style Kubernetes Secrets: `app` uses `<cluster>-app`, `postgres` uses `<cluster>-superuser` and requires `spec.enableSuperuserAccess: true`, and any other value uses `<cluster>-<backup_user>`.
+
+`skip_inaccessible_databases` controls database discovery when the backup user cannot connect to every database. It defaults to `false`, so the plugin attempts every non-template database that allows connections and fails clearly if `pg_dump` lacks permission. Set it to `"true"` to skip databases where the backup user lacks `CONNECT` privilege.
 
 `path` and `object_key_template` are configured per `ScheduledBackup`, so each CNPG cluster can use its own bucket or object layout. `path` is an optional prefix. `object_key_template` defaults to `{namespace}/{cluster}/{database}/{backup_id}.dump` and supports these placeholders:
 
@@ -412,6 +422,6 @@ Object keys are written as:
 ## Notes
 
 - The plugin connects through the CNPG read service: `<cluster>-r.<namespace>.svc:5432`.
-- Credentials are read from the CNPG application secret: `<cluster>-app`.
-- Databases are discovered with `SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate AND has_database_privilege(datname, 'CONNECT')`, so databases the configured role cannot connect to are skipped.
+- Credentials are read from the secret selected by `backup_user`; by default this is the CNPG application secret: `<cluster>-app`.
+- Databases are discovered with `SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate` by default. With `skip_inaccessible_databases: "true"`, discovery adds `has_database_privilege(datname, 'CONNECT')` so databases the configured role cannot connect to are skipped.
 - Retention deletes objects whose backup timestamp in the filename is older than `retention_days`.

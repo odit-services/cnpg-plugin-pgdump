@@ -13,6 +13,8 @@ const (
 	DefaultTargetType        = "s3"
 	DefaultRetention         = 30
 	DefaultObjectKeyTemplate = "{namespace}/{cluster}/{database}/{backup_id}.dump"
+	DefaultBackupUser        = "app"
+	DefaultSkipInaccessible  = false
 )
 
 type Config struct {
@@ -36,6 +38,8 @@ type BackupConfig struct {
 	EndpointURLSecret     SecretKeyRef
 	RegionSecret          SecretKeyRef
 	BucketSecret          SecretKeyRef
+	BackupUser            string
+	SkipInaccessible      bool
 }
 
 type SecretKeyRef struct {
@@ -72,6 +76,14 @@ func ParseBackupConfig(parameters map[string]string, defaults Config) (BackupCon
 		}
 		retention = parsed
 	}
+	skipInaccessible := DefaultSkipInaccessible
+	if value := parameters["skip_inaccessible_databases"]; value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return BackupConfig{}, errInvalidParameter("skip_inaccessible_databases", value)
+		}
+		skipInaccessible = parsed
+	}
 
 	cfg := BackupConfig{
 		TargetType:            withDefault(parameters["target_type"], DefaultTargetType),
@@ -86,6 +98,8 @@ func ParseBackupConfig(parameters map[string]string, defaults Config) (BackupCon
 		EndpointURLSecret:     secretRef(parameters, "endpoint_url_secret", "endpoint"),
 		RegionSecret:          secretRef(parameters, "region_secret", "region"),
 		BucketSecret:          secretRef(parameters, "bucket_secret", "bucket"),
+		BackupUser:            withDefault(parameters["backup_user"], DefaultBackupUser),
+		SkipInaccessible:      skipInaccessible,
 	}
 
 	if cfg.TargetType != DefaultTargetType {

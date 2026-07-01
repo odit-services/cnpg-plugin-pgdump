@@ -99,3 +99,36 @@ func TestResolveS3SecretsRequiresReferencedKeys(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestBackupUserSecretName(t *testing.T) {
+	tests := map[string]string{
+		"":         "cluster-app",
+		"app":      "cluster-app",
+		"postgres": "cluster-superuser",
+		"backup":   "cluster-backup",
+	}
+
+	for user, want := range tests {
+		if got := backupUserSecretName("cluster", user); got != want {
+			t.Fatalf("backupUserSecretName(%q) = %q, want %q", user, got, want)
+		}
+	}
+}
+
+func TestReadBackupUserSecretUsesSuperuserSecret(t *testing.T) {
+	server := New(config.Config{}, nil, fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster-superuser", Namespace: "app"},
+		Data: map[string][]byte{
+			corev1.BasicAuthUsernameKey: []byte("postgres"),
+			corev1.BasicAuthPasswordKey: []byte("secret"),
+		},
+	}), nil)
+
+	password, user, err := server.readBackupUserSecret(context.Background(), "app", "cluster", "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user != "postgres" || password != "secret" {
+		t.Fatalf("credentials user=%q password=%q", user, password)
+	}
+}

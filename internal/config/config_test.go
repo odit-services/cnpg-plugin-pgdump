@@ -20,6 +20,38 @@ func TestParseBackupConfigDefaults(t *testing.T) {
 	if cfg.ObjectKeyTemplate != DefaultObjectKeyTemplate {
 		t.Fatalf("object key template %q", cfg.ObjectKeyTemplate)
 	}
+	if cfg.BackupUser != DefaultBackupUser {
+		t.Fatalf("backup user %q", cfg.BackupUser)
+	}
+	if cfg.SkipInaccessible != DefaultSkipInaccessible {
+		t.Fatalf("skip inaccessible %v", cfg.SkipInaccessible)
+	}
+}
+
+func TestParseBackupConfigBackupUserParameter(t *testing.T) {
+	cfg, err := ParseBackupConfig(map[string]string{"bucket": "team-backups", "backup_user": "postgres"}, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BackupUser != "postgres" {
+		t.Fatalf("backup user %q", cfg.BackupUser)
+	}
+}
+
+func TestParseBackupConfigSkipInaccessibleDatabasesParameter(t *testing.T) {
+	cfg, err := ParseBackupConfig(map[string]string{"bucket": "team-backups", "skip_inaccessible_databases": "true"}, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.SkipInaccessible {
+		t.Fatal("expected skip inaccessible databases")
+	}
+}
+
+func TestParseBackupConfigValidatesSkipInaccessibleDatabasesParameter(t *testing.T) {
+	if _, err := ParseBackupConfig(map[string]string{"bucket": "team-backups", "skip_inaccessible_databases": "sometimes"}, Config{}); err == nil {
+		t.Fatal("expected error")
+	}
 }
 
 func TestParseBackupConfigRegionParameter(t *testing.T) {
