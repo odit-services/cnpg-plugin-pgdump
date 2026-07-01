@@ -15,7 +15,11 @@ test:
 	go test ./...
 
 e2e:
-	go test -tags=e2e ./test/e2e -count=1 -timeout=45m -postgres-versions="$(POSTGRES_VERSIONS)" -container-runtime="$(CONTAINER_RUNTIME)" -parallelism="$(E2E_PARALLELISM)"
+	@if [ "$(E2E_DELEGATED)" != "1" ] && command -v podman >/dev/null 2>&1 && [ "$$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" = "true" ] && command -v systemd-run >/dev/null 2>&1; then \
+		exec systemd-run --user --scope -p Delegate=yes env E2E_DELEGATED=1 $(MAKE) e2e POSTGRES_VERSIONS="$(POSTGRES_VERSIONS)" CONTAINER_RUNTIME="$(CONTAINER_RUNTIME)" E2E_PARALLELISM="$(E2E_PARALLELISM)"; \
+	else \
+		go test -tags=e2e ./test/e2e -count=1 -timeout=45m -postgres-versions="$(POSTGRES_VERSIONS)" -container-runtime="$(CONTAINER_RUNTIME)" -parallelism="$(E2E_PARALLELISM)"; \
+	fi
 
 fmt:
 	gofmt -w .
