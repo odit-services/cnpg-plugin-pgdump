@@ -7,6 +7,7 @@ import (
 	cnpgv1 "github.com/cloudnative-pg/api/pkg/api/v1"
 	cnpgoperator "github.com/cloudnative-pg/cnpg-i/pkg/operator"
 	pgbackup "github.com/odit-services/cnpg-plugin-pgdump/internal/backup"
+	"github.com/odit-services/cnpg-plugin-pgdump/internal/config"
 )
 
 type Server struct {
@@ -69,7 +70,25 @@ func (s *Server) SetStatusInCluster(_ context.Context, request *cnpgoperator.Set
 	if err != nil {
 		return nil, err
 	}
+	for _, pluginStatus := range cluster.Status.PluginStatus {
+		if pluginStatus.Name != config.PluginName || pluginStatus.Status == "" {
+			continue
+		}
+
+		var current, desired any
+		if err := json.Unmarshal([]byte(pluginStatus.Status), &current); err == nil &&
+			json.Unmarshal(jsonStatus, &desired) == nil &&
+			jsonEqual(current, desired) {
+			return &cnpgoperator.SetStatusInClusterResponse{}, nil
+		}
+	}
 	return &cnpgoperator.SetStatusInClusterResponse{JsonStatus: jsonStatus}, nil
+}
+
+func jsonEqual(left, right any) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && string(leftJSON) == string(rightJSON)
 }
 
 func (s *Server) Deregister(_ context.Context, request *cnpgoperator.DeregisterRequest) (*cnpgoperator.DeregisterResponse, error) {
