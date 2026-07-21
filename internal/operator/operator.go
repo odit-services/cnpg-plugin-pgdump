@@ -3,20 +3,22 @@ package operator
 import (
 	"context"
 	"encoding/json"
+	"sync"
 
 	cnpgv1 "github.com/cloudnative-pg/api/pkg/api/v1"
 	cnpgoperator "github.com/cloudnative-pg/cnpg-i/pkg/operator"
 	pgbackup "github.com/odit-services/cnpg-plugin-pgdump/internal/backup"
-	"github.com/odit-services/cnpg-plugin-pgdump/internal/config"
 )
 
 type Server struct {
 	cnpgoperator.UnimplementedOperatorServer
-	store *pgbackup.Store
+	store     *pgbackup.Store
+	mu        sync.Mutex
+	published map[string]string
 }
 
 func New(store *pgbackup.Store) *Server {
-	return &Server{store: store}
+	return &Server{store: store, published: map[string]string{}}
 }
 
 func (s *Server) GetCapabilities(context.Context, *cnpgoperator.OperatorCapabilitiesRequest) (*cnpgoperator.OperatorCapabilitiesResult, error) {
@@ -70,31 +72,24 @@ func (s *Server) SetStatusInCluster(_ context.Context, request *cnpgoperator.Set
 	if err != nil {
 		return nil, err
 	}
-	for _, pluginStatus := range cluster.Status.PluginStatus {
-		if pluginStatus.Name != config.PluginName || pluginStatus.Status == "" {
-			continue
-		}
-
-		var current, desired any
-		if err := json.Unmarshal([]byte(pluginStatus.Status), &current); err == nil &&
-			json.Unmarshal(jsonStatus, &desired) == nil &&
-			jsonEqual(current, desired) {
-			return &cnpgoperator.SetStatusInClusterResponse{}, nil
-		}
+	clusterKey := cluster.Namespace + "/" + cluster.Name
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.published[clusterKey] == last.BackupID {
+		return &cnpgoperator.SetStatusInClusterResponse{}, nil
 	}
+	s.published[clusterKey] = last.BackupID
 	return &cnpgoperator.SetStatusInClusterResponse{JsonStatus: jsonStatus}, nil
-}
-
-func jsonEqual(left, right any) bool {
-	leftJSON, leftErr := json.Marshal(left)
-	rightJSON, rightErr := json.Marshal(right)
-	return leftErr == nil && rightErr == nil && string(leftJSON) == string(rightJSON)
 }
 
 func (s *Server) Deregister(_ context.Context, request *cnpgoperator.DeregisterRequest) (*cnpgoperator.DeregisterResponse, error) {
 	var cluster cnpgv1.Cluster
 	if err := json.Unmarshal(request.GetDefinition(), &cluster); err == nil {
-		s.store.Set(cluster.Namespace+"/"+cluster.Name, pgbackup.Result{})
+		clusterKey := cluster.Namespace + "/" + cluster.Name
+		s.store.Set(clusterKey, pgbackup.Result{})
+		s.mu.Lock()
+		delete(s.published, clusterKey)
+		s.mu.Unlock()
 	}
 	return &cnpgoperator.DeregisterResponse{}, nil
 }
