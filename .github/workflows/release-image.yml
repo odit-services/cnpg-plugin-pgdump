@@ -12,7 +12,7 @@ on:
         required: true
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -73,3 +73,37 @@ jobs:
           tags: ghcr.io/odit-services/cnpg-plugin-pgdump:${{ steps.version.outputs.VERSION }}
           build-args: |
             VERSION=${{ steps.version.outputs.VERSION }}
+
+      - name: Generate Trivy vulnerability report
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/odit-services/cnpg-plugin-pgdump:${{ steps.version.outputs.VERSION }}
+          format: json
+          output: trivy-report.json
+          exit-code: '0'
+          skip-setup-trivy: true
+          cache: 'false'
+          cache-dir: /var/tmp/trivy-cache
+
+      - name: Generate SBOM
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/odit-services/cnpg-plugin-pgdump:${{ steps.version.outputs.VERSION }}
+          format: cyclonedx
+          output: sbom.cyclonedx.json
+          exit-code: '0'
+          skip-setup-trivy: true
+          cache: 'false'
+          cache-dir: /var/tmp/trivy-cache
+
+      - name: Attach reports to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.VERSION }}"
+          # The manifests release workflow creates the release in parallel; wait for it.
+          for i in $(seq 1 30); do
+            gh release view "$TAG" >/dev/null 2>&1 && break
+            sleep 20
+          done
+          gh release upload "$TAG" trivy-report.json sbom.cyclonedx.json --clobber
