@@ -62,7 +62,8 @@ jobs:
             dist/cnpg-plugin-pgdump-quickstart.tar.gz \
             --title "${GITHUB_REF_NAME}" \
             --notes-file dist/release-notes.md \
-            --verify-tag
+            --verify-tag \
+            --draft
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
