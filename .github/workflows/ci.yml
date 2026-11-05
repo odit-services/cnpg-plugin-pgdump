@@ -39,8 +39,6 @@ jobs:
           tags: ghcr.io/odit-services/cnpg-plugin-pgdump:latest
           build-args: |
             VERSION=latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@v0.36.0
@@ -60,5 +58,3 @@ jobs:
           tags: ghcr.io/odit-services/cnpg-plugin-pgdump:latest
           build-args: |
             VERSION=latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
