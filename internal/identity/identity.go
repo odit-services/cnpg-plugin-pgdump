@@ -16,7 +16,10 @@ func New(version string) *Server {
 	return &Server{version: version}
 }
 
-func (s *Server) GetPluginMetadata(context.Context, *cnpgi.GetPluginMetadataRequest) (*cnpgi.GetPluginMetadataResponse, error) {
+func (s *Server) GetPluginMetadata(
+	context.Context,
+	*cnpgi.GetPluginMetadataRequest,
+) (*cnpgi.GetPluginMetadataResponse, error) {
 	return &cnpgi.GetPluginMetadataResponse{
 		Name:          config.PluginName,
 		Version:       s.version,
@@ -31,7 +34,10 @@ func (s *Server) GetPluginMetadata(context.Context, *cnpgi.GetPluginMetadataRequ
 	}, nil
 }
 
-func (s *Server) GetPluginCapabilities(context.Context, *cnpgi.GetPluginCapabilitiesRequest) (*cnpgi.GetPluginCapabilitiesResponse, error) {
+func (s *Server) GetPluginCapabilities(
+	context.Context,
+	*cnpgi.GetPluginCapabilitiesRequest,
+) (*cnpgi.GetPluginCapabilitiesResponse, error) {
 	return &cnpgi.GetPluginCapabilitiesResponse{
 		Capabilities: []*cnpgi.PluginCapability{
 			serviceCapability(cnpgi.PluginCapability_Service_TYPE_OPERATOR_SERVICE),

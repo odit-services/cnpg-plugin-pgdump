@@ -46,7 +46,8 @@ func New(version string) *cobra.Command {
 	})
 
 	cmd.Use = "plugin"
-	cmd.Flags().String("listen-address", "", "Listen address. Use unix:///path for plugin-path compatibility or host:port for TCP")
+	cmd.Flags().String("listen-address", "",
+		"Listen address. Use unix:///path for plugin-path compatibility or host:port for TCP")
 
 	_ = viper.BindPFlag("listen-address", cmd.Flags().Lookup("listen-address"))
 

@@ -34,7 +34,8 @@ type PGDumpExecutor struct {
 }
 
 const listDatabasesQuery = "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname"
-const listAccessibleDatabasesQuery = "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate AND has_database_privilege(datname, 'CONNECT') ORDER BY datname"
+const listAccessibleDatabasesQuery = "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate " +
+	"AND has_database_privilege(datname, 'CONNECT') ORDER BY datname"
 
 func NewPGDumpExecutor(timeout time.Duration) *PGDumpExecutor {
 	return &PGDumpExecutor{BinaryTemplate: "/usr/local/bin/pg_dump-%s", Timeout: timeout}
@@ -45,7 +46,7 @@ func (e *PGDumpExecutor) ServerMajor(ctx context.Context, conn Connection) (stri
 	if err != nil {
 		return "", err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	var versionNum int
 	if err := db.QueryRowContext(ctx, "SHOW server_version_num").Scan(&versionNum); err != nil {
@@ -59,7 +60,7 @@ func (e *PGDumpExecutor) ListDatabases(ctx context.Context, conn Connection, ski
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	query := listDatabasesQuery
 	if skipInaccessible {
@@ -69,7 +70,7 @@ func (e *PGDumpExecutor) ListDatabases(ctx context.Context, conn Connection, ski
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var databases []string
 	for rows.Next() {
@@ -105,7 +106,9 @@ func openPostgres(ctx context.Context, conn Connection) (*sql.DB, error) {
 	return db, nil
 }
 
-func (e *PGDumpExecutor) Dump(ctx context.Context, conn Connection, database, backupID, workDir string) (string, int64, error) {
+func (e *PGDumpExecutor) Dump(
+	ctx context.Context, conn Connection, database, backupID, workDir string,
+) (string, int64, error) {
 	if err := os.MkdirAll(workDir, 0o700); err != nil {
 		return "", 0, err
 	}

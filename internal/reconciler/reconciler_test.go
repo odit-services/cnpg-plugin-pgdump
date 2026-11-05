@@ -142,9 +142,10 @@ func TestReadBackupUserSecretUsesSuperuserSecret(t *testing.T) {
 
 func TestUpdateBackupStatusCompleted(t *testing.T) {
 	backup := backupObject("app", "logical-backup")
-	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
-		backupsResource: "BackupList",
-	}, backup)
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{
+			backupsResource: "BackupList",
+		}, backup)
 	server := New(config.Config{}, nil, nil, client, nil)
 	started := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	stopped := started.Add(time.Minute)
@@ -161,7 +162,8 @@ func TestUpdateBackupStatusCompleted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := client.Resource(backupsResource).Namespace("app").Get(context.Background(), "logical-backup", metav1.GetOptions{})
+	got, err := client.Resource(backupsResource).Namespace("app").
+		Get(context.Background(), "logical-backup", metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,9 +179,10 @@ func TestUpdateBackupStatusCompleted(t *testing.T) {
 
 func TestUpdateBackupStatusFailed(t *testing.T) {
 	backup := backupObject("app", "logical-backup")
-	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
-		backupsResource: "BackupList",
-	}, backup)
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{
+			backupsResource: "BackupList",
+		}, backup)
 	server := New(config.Config{}, nil, nil, client, nil)
 
 	err := server.updateBackupStatus(context.Background(), cnpgv1.Backup{
@@ -193,7 +196,8 @@ func TestUpdateBackupStatusFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := client.Resource(backupsResource).Namespace("app").Get(context.Background(), "logical-backup", metav1.GetOptions{})
+	got, err := client.Resource(backupsResource).Namespace("app").
+		Get(context.Background(), "logical-backup", metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

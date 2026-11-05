@@ -16,7 +16,10 @@ func NewService() *Service {
 	return &Service{}
 }
 
-func (s *Service) GetCapabilities(context.Context, *cnpgbackup.BackupCapabilitiesRequest) (*cnpgbackup.BackupCapabilitiesResult, error) {
+func (s *Service) GetCapabilities(
+	context.Context,
+	*cnpgbackup.BackupCapabilitiesRequest,
+) (*cnpgbackup.BackupCapabilitiesResult, error) {
 	return &cnpgbackup.BackupCapabilitiesResult{
 		Capabilities: []*cnpgbackup.BackupCapability{
 			{

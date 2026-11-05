@@ -62,7 +62,7 @@ func (u *S3Uploader) Upload(ctx context.Context, localPath, key string) (int64, 
 	if err != nil {
 		return 0, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	stat, err := file.Stat()
 	if err != nil {

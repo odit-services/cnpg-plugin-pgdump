@@ -39,7 +39,9 @@ func TestParseBackupConfigBackupUserParameter(t *testing.T) {
 }
 
 func TestParseBackupConfigSkipInaccessibleDatabasesParameter(t *testing.T) {
-	cfg, err := ParseBackupConfig(map[string]string{"bucket": "team-backups", "skip_inaccessible_databases": "true"}, Config{})
+	cfg, err := ParseBackupConfig(map[string]string{
+		"bucket": "team-backups", "skip_inaccessible_databases": "true",
+	}, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +51,9 @@ func TestParseBackupConfigSkipInaccessibleDatabasesParameter(t *testing.T) {
 }
 
 func TestParseBackupConfigValidatesSkipInaccessibleDatabasesParameter(t *testing.T) {
-	if _, err := ParseBackupConfig(map[string]string{"bucket": "team-backups", "skip_inaccessible_databases": "sometimes"}, Config{}); err == nil {
+	if _, err := ParseBackupConfig(map[string]string{
+		"bucket": "team-backups", "skip_inaccessible_databases": "sometimes",
+	}, Config{}); err == nil {
 		t.Fatal("expected error")
 	}
 }

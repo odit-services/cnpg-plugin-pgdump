@@ -28,18 +28,24 @@ var backupsResource = schema.GroupVersionResource{Group: "postgresql.cnpg.io", V
 
 type Server struct {
 	cnpgreconciler.UnimplementedReconcilerHooksServer
-	appConfig config.Config
-	executor  pgbackup.DumpExecutor
-	kube      kubernetes.Interface
-	dynamic   dynamic.Interface
-	store     *pgbackup.Store
+	appConfig     config.Config
+	executor      pgbackup.DumpExecutor
+	kube          kubernetes.Interface
+	dynamicClient dynamic.Interface
+	store         *pgbackup.Store
 }
 
-func New(appConfig config.Config, executor pgbackup.DumpExecutor, kube kubernetes.Interface, dynamic dynamic.Interface, store *pgbackup.Store) *Server {
-	return &Server{appConfig: appConfig, executor: executor, kube: kube, dynamic: dynamic, store: store}
+func New(
+	appConfig config.Config, executor pgbackup.DumpExecutor, kube kubernetes.Interface,
+	dynamicClient dynamic.Interface, store *pgbackup.Store,
+) *Server {
+	return &Server{appConfig: appConfig, executor: executor, kube: kube, dynamicClient: dynamicClient, store: store}
 }
 
-func (s *Server) GetCapabilities(context.Context, *cnpgreconciler.ReconcilerHooksCapabilitiesRequest) (*cnpgreconciler.ReconcilerHooksCapabilitiesResult, error) {
+func (s *Server) GetCapabilities(
+	context.Context,
+	*cnpgreconciler.ReconcilerHooksCapabilitiesRequest,
+) (*cnpgreconciler.ReconcilerHooksCapabilitiesResult, error) {
 	return &cnpgreconciler.ReconcilerHooksCapabilitiesResult{
 		ReconcilerCapabilities: []*cnpgreconciler.ReconcilerHooksCapability{
 			{Kind: cnpgreconciler.ReconcilerHooksCapability_KIND_BACKUP},
@@ -47,7 +53,10 @@ func (s *Server) GetCapabilities(context.Context, *cnpgreconciler.ReconcilerHook
 	}, nil
 }
 
-func (s *Server) Pre(ctx context.Context, request *cnpgreconciler.ReconcilerHooksRequest) (*cnpgreconciler.ReconcilerHooksResult, error) {
+func (s *Server) Pre(
+	ctx context.Context,
+	request *cnpgreconciler.ReconcilerHooksRequest,
+) (*cnpgreconciler.ReconcilerHooksResult, error) {
 	logger := log.FromContext(ctx)
 
 	var cluster cnpgv1.Cluster
@@ -99,12 +108,15 @@ func (s *Server) Pre(ctx context.Context, request *cnpgreconciler.ReconcilerHook
 		logger.Error(err, "Cannot update Backup status")
 		return continueResult(), nil
 	}
-	logger.Info("Logical backup completed", "backupID", result.BackupID, "size", result.LastBackupSize, "databases", result.DatabasesBackedUp)
+	logger.Info("Logical backup completed",
+		"backupID", result.BackupID, "size", result.LastBackupSize, "databases", result.DatabasesBackedUp)
 	return terminateResult(), nil
 }
 
-func (s *Server) updateBackupStatus(ctx context.Context, backup cnpgv1.Backup, result pgbackup.Result, phase cnpgv1.BackupPhase) error {
-	if s.dynamic == nil {
+func (s *Server) updateBackupStatus(
+	ctx context.Context, backup cnpgv1.Backup, result pgbackup.Result, phase cnpgv1.BackupPhase,
+) error {
+	if s.dynamicClient == nil {
 		return fmt.Errorf("dynamic kubernetes client is not configured")
 	}
 
@@ -134,18 +146,24 @@ func (s *Server) updateBackupStatus(ctx context.Context, backup cnpgv1.Backup, r
 	if err != nil {
 		return err
 	}
-	_, err = s.dynamic.Resource(backupsResource).Namespace(backup.Namespace).Patch(ctx, backup.Name, types.MergePatchType, patchData, metav1.PatchOptions{}, "status")
+	_, err = s.dynamicClient.Resource(backupsResource).Namespace(backup.Namespace).
+		Patch(ctx, backup.Name, types.MergePatchType, patchData, metav1.PatchOptions{}, "status")
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
 	return err
 }
 
-func (s *Server) Post(context.Context, *cnpgreconciler.ReconcilerHooksRequest) (*cnpgreconciler.ReconcilerHooksResult, error) {
+func (s *Server) Post(
+	context.Context,
+	*cnpgreconciler.ReconcilerHooksRequest,
+) (*cnpgreconciler.ReconcilerHooksResult, error) {
 	return continueResult(), nil
 }
 
-func (s *Server) runBackup(ctx context.Context, cluster cnpgv1.Cluster, backup cnpgv1.Backup, backupConfig config.BackupConfig) (pgbackup.Result, error) {
+func (s *Server) runBackup(
+	ctx context.Context, cluster cnpgv1.Cluster, backup cnpgv1.Backup, backupConfig config.BackupConfig,
+) (pgbackup.Result, error) {
 	now := time.Now().UTC()
 	id := backupID(backup, now)
 	result := pgbackup.Result{BackupID: id, StartedAt: now}
@@ -197,7 +215,8 @@ func (s *Server) runBackup(ctx context.Context, cluster cnpgv1.Cluster, backup c
 			return result, err
 		}
 
-		key := pgbackup.ObjectKey(backupConfig.Path, backupConfig.ObjectKeyTemplate, cluster.Namespace, cluster.Name, database, id)
+		key := pgbackup.ObjectKey(backupConfig.Path, backupConfig.ObjectKeyTemplate,
+			cluster.Namespace, cluster.Name, database, id)
 		uploadedSize, err := uploader.Upload(ctx, localPath, key)
 		_ = os.Remove(localPath)
 		if err != nil {
@@ -211,7 +230,8 @@ func (s *Server) runBackup(ctx context.Context, cluster cnpgv1.Cluster, backup c
 		result.DatabasesBackedUp = append(result.DatabasesBackedUp, database)
 		result.Objects = append(result.Objects, "s3://"+path.Join(backupConfig.Bucket, key))
 
-		prefix := pgbackup.DatabasePrefix(backupConfig.Path, backupConfig.ObjectKeyTemplate, cluster.Namespace, cluster.Name, database)
+		prefix := pgbackup.DatabasePrefix(backupConfig.Path, backupConfig.ObjectKeyTemplate,
+			cluster.Namespace, cluster.Name, database)
 		if err := pgbackup.ApplyRetention(ctx, uploader, prefix, backupConfig.RetentionDays, now); err != nil {
 			return result, err
 		}
@@ -221,7 +241,9 @@ func (s *Server) runBackup(ctx context.Context, cluster cnpgv1.Cluster, backup c
 	return result, nil
 }
 
-func (s *Server) resolveS3Secrets(ctx context.Context, namespace string, backupConfig config.BackupConfig) (config.BackupConfig, error) {
+func (s *Server) resolveS3Secrets(
+	ctx context.Context, namespace string, backupConfig config.BackupConfig,
+) (config.BackupConfig, error) {
 	var err error
 	backupConfig.AccessKeyID, err = s.secretValue(ctx, namespace, backupConfig.AccessKeyIDSecret)
 	if err != nil {
@@ -267,7 +289,9 @@ func (s *Server) secretValue(ctx context.Context, namespace string, ref config.S
 	return string(value), nil
 }
 
-func (s *Server) readBackupUserSecret(ctx context.Context, namespace, clusterName, backupUser string) (password, user string, err error) {
+func (s *Server) readBackupUserSecret(
+	ctx context.Context, namespace, clusterName, backupUser string,
+) (password, user string, err error) {
 	if s.kube == nil {
 		return "", "", fmt.Errorf("kubernetes client is not configured")
 	}
@@ -311,7 +335,8 @@ func extractParameters(raw []byte, typed *cnpgv1.BackupPluginConfiguration) map[
 		return nil
 	}
 
-	for _, candidate := range []*cnpgv1.BackupPluginConfiguration{fallback.Spec.PluginConfiguration, fallback.Spec.Plugin} {
+	pluginConfigs := []*cnpgv1.BackupPluginConfiguration{fallback.Spec.PluginConfiguration, fallback.Spec.Plugin}
+	for _, candidate := range pluginConfigs {
 		if candidate != nil && candidate.Name == config.PluginName {
 			return candidate.Parameters
 		}

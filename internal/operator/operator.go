@@ -21,7 +21,10 @@ func New(store *pgbackup.Store) *Server {
 	return &Server{store: store, published: map[string]string{}}
 }
 
-func (s *Server) GetCapabilities(context.Context, *cnpgoperator.OperatorCapabilitiesRequest) (*cnpgoperator.OperatorCapabilitiesResult, error) {
+func (s *Server) GetCapabilities(
+	context.Context,
+	*cnpgoperator.OperatorCapabilitiesRequest,
+) (*cnpgoperator.OperatorCapabilitiesResult, error) {
 	return &cnpgoperator.OperatorCapabilitiesResult{
 		Capabilities: []*cnpgoperator.OperatorCapability{
 			rpcCapability(cnpgoperator.OperatorCapability_RPC_TYPE_VALIDATE_CLUSTER_CREATE),
@@ -33,19 +36,31 @@ func (s *Server) GetCapabilities(context.Context, *cnpgoperator.OperatorCapabili
 	}, nil
 }
 
-func (s *Server) ValidateClusterCreate(context.Context, *cnpgoperator.OperatorValidateClusterCreateRequest) (*cnpgoperator.OperatorValidateClusterCreateResult, error) {
+func (s *Server) ValidateClusterCreate(
+	context.Context,
+	*cnpgoperator.OperatorValidateClusterCreateRequest,
+) (*cnpgoperator.OperatorValidateClusterCreateResult, error) {
 	return &cnpgoperator.OperatorValidateClusterCreateResult{}, nil
 }
 
-func (s *Server) ValidateClusterChange(context.Context, *cnpgoperator.OperatorValidateClusterChangeRequest) (*cnpgoperator.OperatorValidateClusterChangeResult, error) {
+func (s *Server) ValidateClusterChange(
+	context.Context,
+	*cnpgoperator.OperatorValidateClusterChangeRequest,
+) (*cnpgoperator.OperatorValidateClusterChangeResult, error) {
 	return &cnpgoperator.OperatorValidateClusterChangeResult{}, nil
 }
 
-func (s *Server) MutateCluster(context.Context, *cnpgoperator.OperatorMutateClusterRequest) (*cnpgoperator.OperatorMutateClusterResult, error) {
+func (s *Server) MutateCluster(
+	context.Context,
+	*cnpgoperator.OperatorMutateClusterRequest,
+) (*cnpgoperator.OperatorMutateClusterResult, error) {
 	return &cnpgoperator.OperatorMutateClusterResult{}, nil
 }
 
-func (s *Server) SetStatusInCluster(_ context.Context, request *cnpgoperator.SetStatusInClusterRequest) (*cnpgoperator.SetStatusInClusterResponse, error) {
+func (s *Server) SetStatusInCluster(
+	_ context.Context,
+	request *cnpgoperator.SetStatusInClusterRequest,
+) (*cnpgoperator.SetStatusInClusterResponse, error) {
 	var cluster cnpgv1.Cluster
 	if err := json.Unmarshal(request.GetCluster(), &cluster); err != nil {
 		return nil, err
@@ -82,7 +97,10 @@ func (s *Server) SetStatusInCluster(_ context.Context, request *cnpgoperator.Set
 	return &cnpgoperator.SetStatusInClusterResponse{JsonStatus: jsonStatus}, nil
 }
 
-func (s *Server) Deregister(_ context.Context, request *cnpgoperator.DeregisterRequest) (*cnpgoperator.DeregisterResponse, error) {
+func (s *Server) Deregister(
+	_ context.Context,
+	request *cnpgoperator.DeregisterRequest,
+) (*cnpgoperator.DeregisterResponse, error) {
 	var cluster cnpgv1.Cluster
 	if err := json.Unmarshal(request.GetDefinition(), &cluster); err == nil {
 		clusterKey := cluster.Namespace + "/" + cluster.Name
