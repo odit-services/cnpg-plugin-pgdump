@@ -1,12 +1,13 @@
-FROM docker.io/library/golang:1.27-alpine AS builder
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27-alpine AS builder
 
 WORKDIR /src
 RUN apk add --no-cache git
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+ARG TARGETARCH
 ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.version=${VERSION}" -o /out/cnpg-plugin-pgdump .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -ldflags "-s -w -X main.version=${VERSION}" -o /out/cnpg-plugin-pgdump .
 
 FROM docker.io/library/postgres:14-alpine AS postgres14
 FROM docker.io/library/postgres:15-alpine AS postgres15
@@ -16,6 +17,11 @@ FROM docker.io/library/postgres:17-alpine AS postgres17
 FROM docker.io/library/postgres:18-alpine
 
 LABEL org.opencontainers.image.source = "https://github.com/odit-services/cnpg-plugin-pgdump"
+
+# Harden the postgres base: drop gosu (unused here, ships with outdated Go stdlib)
+# and pull in the latest alpine security fixes.
+RUN rm -f /usr/local/bin/gosu \
+    && apk upgrade --no-cache
 
 COPY --from=builder /out/cnpg-plugin-pgdump /usr/local/bin/cnpg-plugin-pgdump
 COPY --from=postgres14 /usr/local/bin/pg_dump /usr/local/bin/pg_dump-14
