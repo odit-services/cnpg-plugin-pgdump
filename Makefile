@@ -6,7 +6,7 @@ BIN_DIR ?= $(CURDIR)/.bin
 SHIKAI ?= $(BIN_DIR)/shikai
 SHIKAI_ARGS ?=
 
-.PHONY: build test e2e docker-build fmt release install-shikai
+.PHONY: build test e2e docker-build docker-build-multiarch fmt release install-shikai
 
 build:
 	CGO_ENABLED=0 go build -ldflags "-X main.version=$(VERSION)" -o bin/$(BINARY) .
@@ -26,6 +26,9 @@ fmt:
 
 docker-build:
 	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE) .
+
+docker-build-multiarch:
+	docker buildx build --platform=linux/arm64,linux/amd64 --push --build-arg VERSION=$(VERSION) -t $(IMAGE) .
 
 install-shikai: $(SHIKAI)
 

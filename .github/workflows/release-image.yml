@@ -51,6 +51,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          platforms: linux/amd64
           load: true
           push: false
           pull: true
@@ -71,10 +72,11 @@ jobs:
           cache: 'false'
           cache-dir: /var/tmp/trivy-cache
 
-      - name: Build and push image
+      - name: Build and push multi-arch image
         uses: docker/build-push-action@v7
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: true
           pull: true
           tags: ${{ steps.version.outputs.TAGS }}

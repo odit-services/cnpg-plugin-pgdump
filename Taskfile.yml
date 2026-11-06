@@ -27,6 +27,9 @@ tasks:
   docker-build:
     cmds:
       - docker build --build-arg VERSION={{.VERSION}} -t {{.IMAGE}} .
+  docker-build-multiarch:
+    cmds:
+      - docker buildx build --platform=linux/arm64,linux/amd64 --push --build-arg VERSION={{.VERSION}} -t {{.IMAGE}} .
   install-shikai:
     status:
       - test -x {{.SHIKAI}}
