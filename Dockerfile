@@ -10,10 +10,10 @@ ARG TARGETARCH
 ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -ldflags "-s -w -X main.version=${VERSION}" -o /out/cnpg-plugin-pgdump .
 
-FROM docker.io/library/postgres:14-alpine AS postgres14
-FROM docker.io/library/postgres:15-alpine AS postgres15
-FROM docker.io/library/postgres:16-alpine AS postgres16
-FROM docker.io/library/postgres:17-alpine AS postgres17
+FROM docker.io/library/postgres:18-alpine AS postgres14
+FROM docker.io/library/postgres:18-alpine AS postgres15
+FROM docker.io/library/postgres:18-alpine AS postgres16
+FROM docker.io/library/postgres:18-alpine AS postgres17
 
 FROM docker.io/library/postgres:18-alpine
 
