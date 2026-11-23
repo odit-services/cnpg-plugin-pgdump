@@ -10,7 +10,7 @@ require (
 	github.com/cloudnative-pg/api v1.30.0
 	github.com/cloudnative-pg/cnpg-i v0.6.0
 	github.com/cloudnative-pg/cnpg-i-machinery v0.4.2
-	github.com/cloudnative-pg/machinery v0.6.1
+	github.com/cloudnative-pg/machinery v0.7.0
 	github.com/cucumber/godog v0.16.0
 	github.com/lib/pq v1.12.3
 	github.com/spf13/cobra v1.10.2
