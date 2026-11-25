@@ -8,17 +8,24 @@ import (
 	cnpgv1 "github.com/cloudnative-pg/api/pkg/api/v1"
 	cnpgoperator "github.com/cloudnative-pg/cnpg-i/pkg/operator"
 	pgbackup "github.com/odit-services/cnpg-plugin-pgdump/internal/backup"
+	"github.com/odit-services/cnpg-plugin-pgdump/internal/config"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 )
+
+var backupsResource = schema.GroupVersionResource{Group: "postgresql.cnpg.io", Version: "v1", Resource: "backups"}
 
 type Server struct {
 	cnpgoperator.UnimplementedOperatorServer
-	store     *pgbackup.Store
-	mu        sync.Mutex
-	published map[string]string
+	dynamicClient dynamic.Interface
+	mu            sync.Mutex
+	published     map[string]string
 }
 
-func New(store *pgbackup.Store) *Server {
-	return &Server{store: store, published: map[string]string{}}
+func New(dynamicClient dynamic.Interface) *Server {
+	return &Server{dynamicClient: dynamicClient, published: map[string]string{}}
 }
 
 func (s *Server) GetCapabilities(
@@ -58,7 +65,7 @@ func (s *Server) MutateCluster(
 }
 
 func (s *Server) SetStatusInCluster(
-	_ context.Context,
+	ctx context.Context,
 	request *cnpgoperator.SetStatusInClusterRequest,
 ) (*cnpgoperator.SetStatusInClusterResponse, error) {
 	var cluster cnpgv1.Cluster
@@ -66,7 +73,10 @@ func (s *Server) SetStatusInCluster(
 		return nil, err
 	}
 
-	last := s.store.Last(cluster.Namespace + "/" + cluster.Name)
+	last, err := s.lastBackup(ctx, cluster)
+	if err != nil {
+		return nil, err
+	}
 	if last.BackupID == "" {
 		return &cnpgoperator.SetStatusInClusterResponse{}, nil
 	}
@@ -104,12 +114,50 @@ func (s *Server) Deregister(
 	var cluster cnpgv1.Cluster
 	if err := json.Unmarshal(request.GetDefinition(), &cluster); err == nil {
 		clusterKey := cluster.Namespace + "/" + cluster.Name
-		s.store.Set(clusterKey, pgbackup.Result{})
 		s.mu.Lock()
 		delete(s.published, clusterKey)
 		s.mu.Unlock()
 	}
 	return &cnpgoperator.DeregisterResponse{}, nil
+}
+
+// lastBackup returns the result of the latest finished plugin Backup of the Cluster.
+func (s *Server) lastBackup(ctx context.Context, cluster cnpgv1.Cluster) (pgbackup.Result, error) {
+	if s.dynamicClient == nil {
+		return pgbackup.Result{}, nil
+	}
+	list, err := s.dynamicClient.Resource(backupsResource).Namespace(cluster.Namespace).
+		List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return pgbackup.Result{}, err
+	}
+
+	var last *cnpgv1.Backup
+	for i := range list.Items {
+		var backup cnpgv1.Backup
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(list.Items[i].Object, &backup); err != nil {
+			continue
+		}
+		if backup.Spec.Cluster.Name != cluster.Name || backup.Spec.Method != cnpgv1.BackupMethodPlugin ||
+			backup.Spec.PluginConfiguration == nil || backup.Spec.PluginConfiguration.Name != config.PluginName ||
+			(backup.Status.Phase != cnpgv1.BackupPhaseCompleted && backup.Status.Phase != cnpgv1.BackupPhaseFailed) {
+			continue
+		}
+		if last == nil || stoppedAt(backup).After(stoppedAt(*last).Time) {
+			last = &backup
+		}
+	}
+	if last == nil {
+		return pgbackup.Result{}, nil
+	}
+	return pgbackup.ResultFromBackup(*last), nil
+}
+
+func stoppedAt(backup cnpgv1.Backup) metav1.Time {
+	if backup.Status.StoppedAt != nil {
+		return *backup.Status.StoppedAt
+	}
+	return backup.CreationTimestamp
 }
 
 func rpcCapability(kind cnpgoperator.OperatorCapability_RPC_Type) *cnpgoperator.OperatorCapability {

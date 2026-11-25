@@ -10,7 +10,6 @@ import (
 	cnpgreconciler "github.com/cloudnative-pg/cnpg-i/pkg/reconciler"
 	pgbackup "github.com/odit-services/cnpg-plugin-pgdump/internal/backup"
 	"github.com/odit-services/cnpg-plugin-pgdump/internal/config"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -19,136 +18,13 @@ import (
 	kubefake "k8s.io/client-go/kubernetes/fake"
 )
 
-func TestResolveS3Secrets(t *testing.T) {
-	server := New(config.Config{}, nil, kubefake.NewSimpleClientset(&corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "backup-s3", Namespace: "app"},
-		Data: map[string][]byte{
-			"endpoint":          []byte("http://rustfs:9000"),
-			"region":            []byte("eu-central-1"),
-			"access-key-id":     []byte("access"),
-			"secret-access-key": []byte("secret"),
-		},
-	}), nil, nil)
-
-	cfg, err := server.resolveS3Secrets(context.Background(), "app", config.BackupConfig{
-		EndpointURL:           "http://fallback:9000",
-		Region:                "us-east-1",
-		EndpointURLSecret:     config.SecretKeyRef{Name: "backup-s3", Key: "endpoint"},
-		RegionSecret:          config.SecretKeyRef{Name: "backup-s3", Key: "region"},
-		AccessKeyIDSecret:     config.SecretKeyRef{Name: "backup-s3", Key: "access-key-id"},
-		SecretAccessKeySecret: config.SecretKeyRef{Name: "backup-s3", Key: "secret-access-key"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if cfg.EndpointURL != "http://rustfs:9000" || cfg.Region != "eu-central-1" {
-		t.Fatalf("resolved endpoint/region %#v", cfg)
-	}
-	if cfg.AccessKeyID != "access" || cfg.SecretAccessKey != "secret" {
-		t.Fatalf("resolved credentials %#v", cfg)
-	}
-}
-
-func TestResolveS3SecretsResolvesBucket(t *testing.T) {
-	server := New(config.Config{}, nil, kubefake.NewSimpleClientset(&corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "s3-creds", Namespace: "app"},
-		Data: map[string][]byte{
-			"bucket": []byte("my-backups"),
-		},
-	}), nil, nil)
-
-	cfg, err := server.resolveS3Secrets(context.Background(), "app", config.BackupConfig{
-		Bucket:       "fallback",
-		BucketSecret: config.SecretKeyRef{Name: "s3-creds", Key: "bucket"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Bucket != "my-backups" {
-		t.Fatalf("bucket %q", cfg.Bucket)
-	}
-}
-
-func TestResolveS3SecretsBucketSecretFallback(t *testing.T) {
-	// When BucketSecret.Name is empty, Bucket should not be overwritten
-	server := New(config.Config{}, nil, nil, nil, nil)
-	cfg, err := server.resolveS3Secrets(context.Background(), "app", config.BackupConfig{
-		Bucket: "direct-bucket",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Bucket != "direct-bucket" {
-		t.Fatalf("bucket %q", cfg.Bucket)
-	}
-}
-
-func TestResolveS3SecretsBucketSecretEmptyName(t *testing.T) {
-	// When BucketSecret references a non-existent secret, it should error
-	server := New(config.Config{}, nil, kubefake.NewSimpleClientset(), nil, nil)
-	_, err := server.resolveS3Secrets(context.Background(), "app", config.BackupConfig{
-		BucketSecret: config.SecretKeyRef{Name: "nonexistent", Key: "bucket"},
-	})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestResolveS3SecretsRequiresReferencedKeys(t *testing.T) {
-	server := New(config.Config{}, nil, kubefake.NewSimpleClientset(&corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "backup-s3", Namespace: "app"},
-		Data:       map[string][]byte{},
-	}), nil, nil)
-
-	_, err := server.resolveS3Secrets(context.Background(), "app", config.BackupConfig{
-		AccessKeyIDSecret: config.SecretKeyRef{Name: "backup-s3", Key: "access-key-id"},
-	})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestBackupUserSecretName(t *testing.T) {
-	tests := map[string]string{
-		"":         "cluster-app",
-		"app":      "cluster-app",
-		"postgres": "cluster-superuser",
-		"backup":   "cluster-backup",
-	}
-
-	for user, want := range tests {
-		if got := backupUserSecretName("cluster", user); got != want {
-			t.Fatalf("backupUserSecretName(%q) = %q, want %q", user, got, want)
-		}
-	}
-}
-
-func TestReadBackupUserSecretUsesSuperuserSecret(t *testing.T) {
-	server := New(config.Config{}, nil, kubefake.NewSimpleClientset(&corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "cluster-superuser", Namespace: "app"},
-		Data: map[string][]byte{
-			corev1.BasicAuthUsernameKey: []byte("postgres"),
-			corev1.BasicAuthPasswordKey: []byte("secret"),
-		},
-	}), nil, nil)
-
-	password, user, err := server.readBackupUserSecret(context.Background(), "app", "cluster", "postgres")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if user != "postgres" || password != "secret" {
-		t.Fatalf("credentials user=%q password=%q", user, password)
-	}
-}
-
 func TestUpdateBackupStatusCompleted(t *testing.T) {
 	backup := backupObject("app", "logical-backup")
 	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{
 			backupsResource: "BackupList",
 		}, backup)
-	server := New(config.Config{}, nil, nil, client, nil)
+	server := New(config.Config{}, nil, client)
 	started := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	stopped := started.Add(time.Minute)
 
@@ -185,7 +61,7 @@ func TestUpdateBackupStatusFailed(t *testing.T) {
 		map[schema.GroupVersionResource]string{
 			backupsResource: "BackupList",
 		}, backup)
-	server := New(config.Config{}, nil, nil, client, nil)
+	server := New(config.Config{}, nil, client)
 
 	err := server.updateBackupStatus(context.Background(), cnpgv1.Backup{
 		ObjectMeta: metav1.ObjectMeta{Name: "logical-backup", Namespace: "app"},
@@ -219,7 +95,7 @@ func TestPreIgnoresBackupOfOtherPlugin(t *testing.T) {
 		map[schema.GroupVersionResource]string{
 			backupsResource: "BackupList",
 		}, backup)
-	server := New(config.Config{}, nil, nil, client, &pgbackup.Store{})
+	server := New(config.Config{}, nil, client)
 
 	clusterJSON, err := json.Marshal(cnpgv1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "app"}})
 	if err != nil {
@@ -255,6 +131,60 @@ func TestPreIgnoresBackupOfOtherPlugin(t *testing.T) {
 	}
 	if phase, _, _ := unstructured.NestedString(got.Object, "status", "phase"); phase != "" {
 		t.Fatalf("phase %q", phase)
+	}
+}
+
+func TestPreGrantsSecretAccessAndContinues(t *testing.T) {
+	kube := kubefake.NewSimpleClientset()
+	server := New(config.Config{}, kube, nil)
+
+	clusterJSON, err := json.Marshal(cnpgv1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "app", UID: "uid-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupJSON, err := json.Marshal(cnpgv1.Backup{
+		ObjectMeta: metav1.ObjectMeta{Name: "logical", Namespace: "app"},
+		Spec: cnpgv1.BackupSpec{
+			Cluster: cnpgv1.LocalObjectReference{Name: "db"},
+			Method:  cnpgv1.BackupMethodPlugin,
+			PluginConfiguration: &cnpgv1.BackupPluginConfiguration{
+				Name: config.PluginName,
+				Parameters: map[string]string{
+					"bucket":                        "backups",
+					"access_key_id_secret_name":     "s3",
+					"secret_access_key_secret_name": "s3",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := server.Pre(context.Background(), &cnpgreconciler.ReconcilerHooksRequest{
+		ClusterDefinition:  clusterJSON,
+		ResourceDefinition: backupJSON,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.GetBehavior() != cnpgreconciler.ReconcilerHooksResult_BEHAVIOR_CONTINUE {
+		t.Fatalf("behavior %v", result.GetBehavior())
+	}
+
+	role, err := kube.RbacV1().Roles("app").Get(context.Background(), "db-pgdump-backup", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := role.Rules[0].ResourceNames; len(got) != 2 || got[0] != "db-app" || got[1] != "s3" {
+		t.Fatalf("role resource names %v", got)
+	}
+	binding, err := kube.RbacV1().RoleBindings("app").Get(context.Background(), "db-pgdump-backup", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.Subjects[0].Name != "db" || binding.RoleRef.Name != "db-pgdump-backup" {
+		t.Fatalf("role binding %#v", binding)
 	}
 }
 

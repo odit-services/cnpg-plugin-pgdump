@@ -6,12 +6,12 @@ import (
 	"strings"
 
 	pluginhttp "github.com/cloudnative-pg/cnpg-i-machinery/pkg/pluginhelper/http"
-	cnpgbackup "github.com/cloudnative-pg/cnpg-i/pkg/backup"
+	cnpglifecycle "github.com/cloudnative-pg/cnpg-i/pkg/lifecycle"
 	cnpgoperator "github.com/cloudnative-pg/cnpg-i/pkg/operator"
 	cnpgreconciler "github.com/cloudnative-pg/cnpg-i/pkg/reconciler"
-	pgbackup "github.com/odit-services/cnpg-plugin-pgdump/internal/backup"
 	"github.com/odit-services/cnpg-plugin-pgdump/internal/config"
 	pgidentity "github.com/odit-services/cnpg-plugin-pgdump/internal/identity"
+	pglifecycle "github.com/odit-services/cnpg-plugin-pgdump/internal/lifecycle"
 	pgoperator "github.com/odit-services/cnpg-plugin-pgdump/internal/operator"
 	pgreconciler "github.com/odit-services/cnpg-plugin-pgdump/internal/reconciler"
 	"github.com/spf13/cobra"
@@ -24,7 +24,6 @@ import (
 
 func New(version string) *cobra.Command {
 	appConfig := config.FromEnv(version)
-	store := &pgbackup.Store{}
 	identityServer := pgidentity.New(appConfig.Version)
 
 	cmd := pluginhttp.CreateMainCmd(identityServer, func(server *grpc.Server) error {
@@ -33,15 +32,9 @@ func New(version string) *cobra.Command {
 			return err
 		}
 
-		cnpgoperator.RegisterOperatorServer(server, pgoperator.New(store))
-		cnpgreconciler.RegisterReconcilerHooksServer(server, pgreconciler.New(
-			appConfig,
-			pgbackup.NewPGDumpExecutor(appConfig.DumpTimeout),
-			kube,
-			dynamicClient,
-			store,
-		))
-		cnpgbackup.RegisterBackupServer(server, pgbackup.NewService())
+		cnpgoperator.RegisterOperatorServer(server, pgoperator.New(dynamicClient))
+		cnpglifecycle.RegisterOperatorLifecycleServer(server, pglifecycle.New(appConfig))
+		cnpgreconciler.RegisterReconcilerHooksServer(server, pgreconciler.New(appConfig, kube, dynamicClient))
 		return nil
 	})
 

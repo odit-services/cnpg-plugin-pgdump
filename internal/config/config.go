@@ -21,6 +21,8 @@ type Config struct {
 	Version     string
 	DumpTimeout time.Duration
 	WorkDir     string
+	// SidecarImage is the image of the backup sidecar injected in the PostgreSQL pods.
+	SidecarImage string
 }
 
 type BackupConfig struct {
@@ -61,9 +63,10 @@ func FromEnv(version string) Config {
 	}
 
 	return Config{
-		Version:     version,
-		DumpTimeout: dumpTimeout,
-		WorkDir:     workDir,
+		Version:      version,
+		DumpTimeout:  dumpTimeout,
+		WorkDir:      workDir,
+		SidecarImage: os.Getenv("SIDECAR_IMAGE"),
 	}
 }
 

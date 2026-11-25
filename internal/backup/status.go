@@ -1,8 +1,18 @@
 package backup
 
 import (
-	"sync"
+	"strconv"
+	"strings"
 	"time"
+
+	cnpgv1 "github.com/cloudnative-pg/api/pkg/api/v1"
+)
+
+// Keys of the backup result metadata, stored by CNPG in the Backup status (pluginMetadata).
+const (
+	MetadataDatabases = "databases"
+	MetadataSize      = "size"
+	MetadataObjects   = "objects"
 )
 
 type Result struct {
@@ -15,26 +25,36 @@ type Result struct {
 	ErrorMessage      string    `json:"error_message,omitempty"`
 }
 
-type Store struct {
-	mu   sync.Mutex
-	last map[string]Result
+// Metadata returns the result fields that CNPG keeps in the Backup status.
+func (r Result) Metadata() map[string]string {
+	return map[string]string{
+		MetadataDatabases: strings.Join(r.DatabasesBackedUp, ","),
+		MetadataSize:      strconv.FormatInt(r.LastBackupSize, 10),
+		MetadataObjects:   strings.Join(r.Objects, ","),
+	}
 }
 
-func (s *Store) Set(clusterKey string, result Result) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.last == nil {
-		s.last = map[string]Result{}
+// ResultFromBackup rebuilds the result of a finished Backup from its status.
+func ResultFromBackup(backup cnpgv1.Backup) Result {
+	result := Result{
+		BackupID:          backup.Status.BackupID,
+		DatabasesBackedUp: split(backup.Status.PluginMetadata[MetadataDatabases]),
+		Objects:           split(backup.Status.PluginMetadata[MetadataObjects]),
+		ErrorMessage:      backup.Status.Error,
 	}
-	if result.BackupID == "" {
-		delete(s.last, clusterKey)
-		return
+	result.LastBackupSize, _ = strconv.ParseInt(backup.Status.PluginMetadata[MetadataSize], 10, 64)
+	if backup.Status.StartedAt != nil {
+		result.StartedAt = backup.Status.StartedAt.Time
 	}
-	s.last[clusterKey] = result
+	if backup.Status.StoppedAt != nil {
+		result.StoppedAt = backup.Status.StoppedAt.Time
+	}
+	return result
 }
 
-func (s *Store) Last(clusterKey string) Result {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.last[clusterKey]
+func split(value string) []string {
+	if value == "" {
+		return nil
+	}
+	return strings.Split(value, ",")
 }

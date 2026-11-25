@@ -41,7 +41,7 @@ func (s *Server) GetPluginCapabilities(
 	return &cnpgi.GetPluginCapabilitiesResponse{
 		Capabilities: []*cnpgi.PluginCapability{
 			serviceCapability(cnpgi.PluginCapability_Service_TYPE_OPERATOR_SERVICE),
-			serviceCapability(cnpgi.PluginCapability_Service_TYPE_BACKUP_SERVICE),
+			serviceCapability(cnpgi.PluginCapability_Service_TYPE_LIFECYCLE_SERVICE),
 			serviceCapability(cnpgi.PluginCapability_Service_TYPE_RECONCILER_HOOKS),
 		},
 	}, nil

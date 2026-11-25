@@ -2,7 +2,9 @@
 
 CNPG-I plugin for CloudNativePG v1.26+ that performs logical PostgreSQL backups with `pg_dump -Fc` and uploads one dump per database to S3.
 
-The plugin uses `ReconcilerHooks.Pre` for `Backup` reconciliation. On success it returns `BEHAVIOR_TERMINATE`, so the CNPG operator skips its physical backup flow. On failure it logs/stores the error and returns `BEHAVIOR_CONTINUE`.
+The backups run in a sidecar (`plugin-pgdump`) that the plugin injects in the PostgreSQL pods of the Clusters using it. CNPG asks the instance manager of the instance chosen for the backup (`spec.backup.target`) to run it, and the instance manager calls the sidecar backup service in the background over a unix socket, so a backup can take as long as needed (`PGDUMP_TIMEOUT`). Enabling the plugin on a Cluster restarts its pods to add the sidecar.
+
+The plugin itself (Deployment in `cnpg-system`) validates the `Backup` in `ReconcilerHooks.Pre` and grants the service account of the Cluster pods read access to the secrets the backup uses (Role and RoleBinding `<cluster>-pgdump-backup`), then lets CNPG continue.
 
 ## Supported PostgreSQL Versions
 
@@ -168,7 +170,10 @@ Deploy the plugin from GHCR:
 ```sh
 kubectl apply -f https://raw.githubusercontent.com/odit-services/cnpg-plugin-pgdump/main/kubernetes/deployment.yaml
 kubectl -n cnpg-system set image deployment/cnpg-plugin-pgdump plugin=ghcr.io/odit-services/cnpg-plugin-pgdump:main
+kubectl -n cnpg-system set env deployment/cnpg-plugin-pgdump SIDECAR_IMAGE=ghcr.io/odit-services/cnpg-plugin-pgdump:main
 ```
+
+`SIDECAR_IMAGE` is the image of the backup sidecar: use the same image as the plugin.
 
 Use a SemVer tag instead of `main` for production, for example `ghcr.io/odit-services/cnpg-plugin-pgdump:1.2.3`. The GitHub Actions workflow publishes branch, SemVer, and SHA tags to GHCR.
 
@@ -304,7 +309,8 @@ Configuration can be set with flags or environment variables:
 
 - `--listen-address`, e.g. `:50051` for TCP or `unix:///plugins` for same-pod socket setups
 - `PGDUMP_TIMEOUT`, default `12h`
-- `PGDUMP_WORKDIR`, default OS temp dir
+- `PGDUMP_WORKDIR`, default OS temp dir (`/work`, an `emptyDir`, in the sidecar)
+- `SIDECAR_IMAGE`, image of the backup sidecar injected in the PostgreSQL pods (no sidecar without it)
 
 S3 configuration belongs to the `ScheduledBackup`. The plugin does not read S3 settings from Deployment environment variables.
 
@@ -421,7 +427,7 @@ Object keys are written as:
 
 ## Notes
 
-- The plugin connects through the CNPG read service: `<cluster>-r.<namespace>.svc:5432`.
+- The sidecar connects to the PostgreSQL instance of its pod: `localhost:5432`.
 - Credentials are read from the secret selected by `backup_user`; by default this is the CNPG application secret: `<cluster>-app`.
 - Databases are discovered with `SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate` by default. With `skip_inaccessible_databases: "true"`, discovery adds `has_database_privilege(datname, 'CONNECT')` so databases the configured role cannot connect to are skipped.
 - Retention deletes objects whose backup timestamp in the filename is older than `retention_days`.
