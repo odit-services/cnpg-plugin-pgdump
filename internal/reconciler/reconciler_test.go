@@ -2,10 +2,12 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	cnpgv1 "github.com/cloudnative-pg/api/pkg/api/v1"
+	cnpgreconciler "github.com/cloudnative-pg/cnpg-i/pkg/reconciler"
 	pgbackup "github.com/odit-services/cnpg-plugin-pgdump/internal/backup"
 	"github.com/odit-services/cnpg-plugin-pgdump/internal/config"
 	corev1 "k8s.io/api/core/v1"
@@ -208,6 +210,51 @@ func TestUpdateBackupStatusFailed(t *testing.T) {
 	message, _, _ := unstructured.NestedString(got.Object, "status", "error")
 	if message != "pg_dump failed" {
 		t.Fatalf("error %q", message)
+	}
+}
+
+func TestPreIgnoresBackupOfOtherPlugin(t *testing.T) {
+	backup := backupObject("app", "barman-backup")
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{
+			backupsResource: "BackupList",
+		}, backup)
+	server := New(config.Config{}, nil, nil, client, &pgbackup.Store{})
+
+	clusterJSON, err := json.Marshal(cnpgv1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "app"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupJSON, err := json.Marshal(cnpgv1.Backup{
+		ObjectMeta: metav1.ObjectMeta{Name: "barman-backup", Namespace: "app"},
+		Spec: cnpgv1.BackupSpec{
+			Cluster:             cnpgv1.LocalObjectReference{Name: "db"},
+			Method:              cnpgv1.BackupMethodPlugin,
+			PluginConfiguration: &cnpgv1.BackupPluginConfiguration{Name: "barman-cloud.cloudnative-pg.io"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := server.Pre(context.Background(), &cnpgreconciler.ReconcilerHooksRequest{
+		ClusterDefinition:  clusterJSON,
+		ResourceDefinition: backupJSON,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.GetBehavior() != cnpgreconciler.ReconcilerHooksResult_BEHAVIOR_CONTINUE {
+		t.Fatalf("behavior %v", result.GetBehavior())
+	}
+
+	got, err := client.Resource(backupsResource).Namespace("app").
+		Get(context.Background(), "barman-backup", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase, _, _ := unstructured.NestedString(got.Object, "status", "phase"); phase != "" {
+		t.Fatalf("phase %q", phase)
 	}
 }
 

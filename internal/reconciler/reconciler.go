@@ -75,7 +75,10 @@ func (s *Server) Pre(
 		return continueResult(), nil
 	}
 
-	parameters := extractParameters(request.GetResourceDefinition(), backup.Spec.PluginConfiguration)
+	parameters, ok := extractParameters(request.GetResourceDefinition(), backup.Spec.PluginConfiguration)
+	if !ok {
+		return continueResult(), nil
+	}
 	backupConfig, err := config.ParseBackupConfig(parameters, s.appConfig)
 	if err != nil {
 		result := pgbackup.Result{
@@ -320,9 +323,9 @@ func clusterKey(namespace, name string) string {
 	return namespace + "/" + name
 }
 
-func extractParameters(raw []byte, typed *cnpgv1.BackupPluginConfiguration) map[string]string {
+func extractParameters(raw []byte, typed *cnpgv1.BackupPluginConfiguration) (map[string]string, bool) {
 	if typed != nil && typed.Name == config.PluginName {
-		return typed.Parameters
+		return typed.Parameters, true
 	}
 
 	var fallback struct {
@@ -332,16 +335,16 @@ func extractParameters(raw []byte, typed *cnpgv1.BackupPluginConfiguration) map[
 		} `json:"spec"`
 	}
 	if err := json.Unmarshal(raw, &fallback); err != nil {
-		return nil
+		return nil, false
 	}
 
 	pluginConfigs := []*cnpgv1.BackupPluginConfiguration{fallback.Spec.PluginConfiguration, fallback.Spec.Plugin}
 	for _, candidate := range pluginConfigs {
 		if candidate != nil && candidate.Name == config.PluginName {
-			return candidate.Parameters
+			return candidate.Parameters, true
 		}
 	}
-	return nil
+	return nil, false
 }
 
 func backupID(backup cnpgv1.Backup, now time.Time) string {
