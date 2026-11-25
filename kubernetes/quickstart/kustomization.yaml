@@ -8,3 +8,15 @@ images:
   - name: platform/cnpg-plugin-pgdump
     newName: ghcr.io/odit-services/cnpg-plugin-pgdump
     newTag: main
+replacements:
+  # the backup sidecar uses the plugin image
+  - source:
+      kind: Deployment
+      name: cnpg-plugin-pgdump
+      fieldPath: spec.template.spec.containers.[name=plugin].image
+    targets:
+      - select:
+          kind: Deployment
+          name: cnpg-plugin-pgdump
+        fieldPaths:
+          - spec.template.spec.containers.[name=plugin].env.[name=SIDECAR_IMAGE].value

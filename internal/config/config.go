@@ -21,6 +21,19 @@ type Config struct {
 	Version     string
 	DumpTimeout time.Duration
 	WorkDir     string
+	// SidecarImage is the image of the backup sidecar injected in the PostgreSQL pods.
+	SidecarImage string
+	// SidecarResources holds the default requests and limits of the sidecar, keyed by Cluster plugin parameter.
+	SidecarResources map[string]string
+}
+
+// SidecarResourceParameters maps the Cluster plugin parameters setting the sidecar requests and limits to the
+// environment variables of the plugin holding their defaults.
+var SidecarResourceParameters = map[string]string{
+	"sidecar_cpu_request":    "SIDECAR_CPU_REQUEST",
+	"sidecar_memory_request": "SIDECAR_MEMORY_REQUEST",
+	"sidecar_cpu_limit":      "SIDECAR_CPU_LIMIT",
+	"sidecar_memory_limit":   "SIDECAR_MEMORY_LIMIT",
 }
 
 type BackupConfig struct {
@@ -60,10 +73,19 @@ func FromEnv(version string) Config {
 		workDir = os.TempDir()
 	}
 
+	sidecarResources := map[string]string{}
+	for parameter, env := range SidecarResourceParameters {
+		if value := os.Getenv(env); value != "" {
+			sidecarResources[parameter] = value
+		}
+	}
+
 	return Config{
-		Version:     version,
-		DumpTimeout: dumpTimeout,
-		WorkDir:     workDir,
+		Version:          version,
+		DumpTimeout:      dumpTimeout,
+		WorkDir:          workDir,
+		SidecarImage:     os.Getenv("SIDECAR_IMAGE"),
+		SidecarResources: sidecarResources,
 	}
 }
 

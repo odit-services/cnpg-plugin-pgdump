@@ -18,6 +18,10 @@ rules:
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["backups/status"]
     verbs: ["patch"]
+  # lets the backup sidecar (service account of the Cluster pods) read the secrets of the backups
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "create", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -51,6 +55,10 @@ spec:
       containers:
         - name: plugin
           image: platform/cnpg-plugin-pgdump:latest
+          env:
+            # image of the backup sidecar injected in the PostgreSQL pods: same as the plugin
+            - name: SIDECAR_IMAGE
+              value: platform/cnpg-plugin-pgdump:latest
           ports:
             - containerPort: 50051
               protocol: TCP

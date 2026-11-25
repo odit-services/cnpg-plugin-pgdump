@@ -4,9 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path"
-	"strings"
 	"time"
 
 	cnpgv1 "github.com/cloudnative-pg/api/pkg/api/v1"
@@ -14,7 +11,7 @@ import (
 	"github.com/cloudnative-pg/machinery/pkg/log"
 	pgbackup "github.com/odit-services/cnpg-plugin-pgdump/internal/backup"
 	"github.com/odit-services/cnpg-plugin-pgdump/internal/config"
-	corev1 "k8s.io/api/core/v1"
+	"github.com/odit-services/cnpg-plugin-pgdump/internal/rbac"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -26,20 +23,16 @@ import (
 
 var backupsResource = schema.GroupVersionResource{Group: "postgresql.cnpg.io", Version: "v1", Resource: "backups"}
 
+// Server checks the plugin Backups before CNPG asks the instance sidecar to take them.
 type Server struct {
 	cnpgreconciler.UnimplementedReconcilerHooksServer
 	appConfig     config.Config
-	executor      pgbackup.DumpExecutor
 	kube          kubernetes.Interface
 	dynamicClient dynamic.Interface
-	store         *pgbackup.Store
 }
 
-func New(
-	appConfig config.Config, executor pgbackup.DumpExecutor, kube kubernetes.Interface,
-	dynamicClient dynamic.Interface, store *pgbackup.Store,
-) *Server {
-	return &Server{appConfig: appConfig, executor: executor, kube: kube, dynamicClient: dynamicClient, store: store}
+func New(appConfig config.Config, kube kubernetes.Interface, dynamicClient dynamic.Interface) *Server {
+	return &Server{appConfig: appConfig, kube: kube, dynamicClient: dynamicClient}
 }
 
 func (s *Server) GetCapabilities(
@@ -75,42 +68,32 @@ func (s *Server) Pre(
 		return continueResult(), nil
 	}
 
-	parameters := extractParameters(request.GetResourceDefinition(), backup.Spec.PluginConfiguration)
+	parameters, ok := extractParameters(request.GetResourceDefinition(), backup.Spec.PluginConfiguration)
+	if !ok {
+		return continueResult(), nil
+	}
 	backupConfig, err := config.ParseBackupConfig(parameters, s.appConfig)
 	if err != nil {
+		now := time.Now().UTC()
 		result := pgbackup.Result{
-			BackupID:     backupID(backup, time.Now().UTC()),
-			StartedAt:    time.Now().UTC(),
-			StoppedAt:    time.Now().UTC(),
+			BackupID:     pgbackup.BackupID(backup, now),
+			StartedAt:    now,
+			StoppedAt:    now,
 			ErrorMessage: err.Error(),
 		}
-		s.store.Set(clusterKey(cluster.Namespace, cluster.Name), result)
 		if statusErr := s.updateBackupStatus(ctx, backup, result, cnpgv1.BackupPhaseFailed); statusErr != nil {
 			logger.Error(statusErr, "Cannot update Backup status")
 		}
 		logger.Error(err, "Invalid backup configuration")
-		return continueResult(), nil
+		return terminateResult(), nil
 	}
 
-	result, err := s.runBackup(ctx, cluster, backup, backupConfig)
-	if err != nil {
-		result.ErrorMessage = err.Error()
-		s.store.Set(clusterKey(cluster.Namespace, cluster.Name), result)
-		if statusErr := s.updateBackupStatus(ctx, backup, result, cnpgv1.BackupPhaseFailed); statusErr != nil {
-			logger.Error(statusErr, "Cannot update Backup status")
-		}
-		logger.Error(err, "Logical backup failed")
-		return continueResult(), nil
+	// The backup runs in the plugin sidecar of the instance chosen by CNPG (backup service, no timeout).
+	// The sidecar uses the service account of the Cluster pods: let it read the secrets of the backup.
+	if err := rbac.EnsureSecretAccess(ctx, s.kube, cluster, pgbackup.SecretNames(cluster.Name, backupConfig)); err != nil {
+		return nil, fmt.Errorf("grant the Cluster pods access to the backup secrets: %w", err)
 	}
-
-	s.store.Set(clusterKey(cluster.Namespace, cluster.Name), result)
-	if err := s.updateBackupStatus(ctx, backup, result, cnpgv1.BackupPhaseCompleted); err != nil {
-		logger.Error(err, "Cannot update Backup status")
-		return continueResult(), nil
-	}
-	logger.Info("Logical backup completed",
-		"backupID", result.BackupID, "size", result.LastBackupSize, "databases", result.DatabasesBackedUp)
-	return terminateResult(), nil
+	return continueResult(), nil
 }
 
 func (s *Server) updateBackupStatus(
@@ -161,168 +144,9 @@ func (s *Server) Post(
 	return continueResult(), nil
 }
 
-func (s *Server) runBackup(
-	ctx context.Context, cluster cnpgv1.Cluster, backup cnpgv1.Backup, backupConfig config.BackupConfig,
-) (pgbackup.Result, error) {
-	now := time.Now().UTC()
-	id := backupID(backup, now)
-	result := pgbackup.Result{BackupID: id, StartedAt: now}
-	backupUser := backupConfig.BackupUser
-	if backupUser == "" {
-		backupUser = config.DefaultBackupUser
-	}
-
-	password, user, err := s.readBackupUserSecret(ctx, cluster.Namespace, cluster.Name, backupUser)
-	if err != nil {
-		return result, err
-	}
-	if user == "" {
-		user = backupUser
-	}
-
-	conn := pgbackup.Connection{
-		Host:     fmt.Sprintf("%s-r.%s.svc", cluster.Name, cluster.Namespace),
-		Port:     5432,
-		User:     user,
-		Password: password,
-	}
-	conn.Major, err = s.executor.ServerMajor(ctx, conn)
-	if err != nil {
-		return result, err
-	}
-
-	databases, err := s.executor.ListDatabases(ctx, conn, backupConfig.SkipInaccessible)
-	if err != nil {
-		return result, err
-	}
-	if len(databases) == 0 {
-		return result, fmt.Errorf("no dumpable databases found")
-	}
-
-	backupConfig, err = s.resolveS3Secrets(ctx, cluster.Namespace, backupConfig)
-	if err != nil {
-		return result, err
-	}
-
-	uploader, err := pgbackup.NewS3Uploader(ctx, backupConfig)
-	if err != nil {
-		return result, err
-	}
-
-	for _, database := range databases {
-		localPath, size, err := s.executor.Dump(ctx, conn, database, id, s.appConfig.WorkDir)
-		if err != nil {
-			return result, err
-		}
-
-		key := pgbackup.ObjectKey(backupConfig.Path, backupConfig.ObjectKeyTemplate,
-			cluster.Namespace, cluster.Name, database, id)
-		uploadedSize, err := uploader.Upload(ctx, localPath, key)
-		_ = os.Remove(localPath)
-		if err != nil {
-			return result, err
-		}
-		if uploadedSize == 0 {
-			uploadedSize = size
-		}
-
-		result.LastBackupSize += uploadedSize
-		result.DatabasesBackedUp = append(result.DatabasesBackedUp, database)
-		result.Objects = append(result.Objects, "s3://"+path.Join(backupConfig.Bucket, key))
-
-		prefix := pgbackup.DatabasePrefix(backupConfig.Path, backupConfig.ObjectKeyTemplate,
-			cluster.Namespace, cluster.Name, database)
-		if err := pgbackup.ApplyRetention(ctx, uploader, prefix, backupConfig.RetentionDays, now); err != nil {
-			return result, err
-		}
-	}
-
-	result.StoppedAt = time.Now().UTC()
-	return result, nil
-}
-
-func (s *Server) resolveS3Secrets(
-	ctx context.Context, namespace string, backupConfig config.BackupConfig,
-) (config.BackupConfig, error) {
-	var err error
-	backupConfig.AccessKeyID, err = s.secretValue(ctx, namespace, backupConfig.AccessKeyIDSecret)
-	if err != nil {
-		return backupConfig, err
-	}
-	backupConfig.SecretAccessKey, err = s.secretValue(ctx, namespace, backupConfig.SecretAccessKeySecret)
-	if err != nil {
-		return backupConfig, err
-	}
-	if value, err := s.secretValue(ctx, namespace, backupConfig.EndpointURLSecret); err != nil {
-		return backupConfig, err
-	} else if value != "" {
-		backupConfig.EndpointURL = value
-	}
-	if value, err := s.secretValue(ctx, namespace, backupConfig.RegionSecret); err != nil {
-		return backupConfig, err
-	} else if value != "" {
-		backupConfig.Region = value
-	}
-	if value, err := s.secretValue(ctx, namespace, backupConfig.BucketSecret); err != nil {
-		return backupConfig, err
-	} else if value != "" {
-		backupConfig.Bucket = value
-	}
-	return backupConfig, nil
-}
-
-func (s *Server) secretValue(ctx context.Context, namespace string, ref config.SecretKeyRef) (string, error) {
-	if ref.Name == "" {
-		return "", nil
-	}
-	if s.kube == nil {
-		return "", fmt.Errorf("kubernetes client is not configured")
-	}
-	secret, err := s.kube.CoreV1().Secrets(namespace).Get(ctx, ref.Name, metav1.GetOptions{})
-	if err != nil {
-		return "", err
-	}
-	value, ok := secret.Data[ref.Key]
-	if !ok {
-		return "", fmt.Errorf("secret %s/%s is missing key %s", namespace, ref.Name, ref.Key)
-	}
-	return string(value), nil
-}
-
-func (s *Server) readBackupUserSecret(
-	ctx context.Context, namespace, clusterName, backupUser string,
-) (password, user string, err error) {
-	if s.kube == nil {
-		return "", "", fmt.Errorf("kubernetes client is not configured")
-	}
-
-	secretName := backupUserSecretName(clusterName, backupUser)
-	secret, err := s.kube.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
-	if err != nil {
-		return "", "", err
-	}
-
-	return string(secret.Data[corev1.BasicAuthPasswordKey]), string(secret.Data[corev1.BasicAuthUsernameKey]), nil
-}
-
-func backupUserSecretName(clusterName, backupUser string) string {
-	switch backupUser {
-	case "", config.DefaultBackupUser:
-		return clusterName + cnpgv1.ApplicationUserSecretSuffix
-	case "postgres":
-		return clusterName + cnpgv1.SuperUserSecretSuffix
-	default:
-		return clusterName + "-" + backupUser
-	}
-}
-
-func clusterKey(namespace, name string) string {
-	return namespace + "/" + name
-}
-
-func extractParameters(raw []byte, typed *cnpgv1.BackupPluginConfiguration) map[string]string {
+func extractParameters(raw []byte, typed *cnpgv1.BackupPluginConfiguration) (map[string]string, bool) {
 	if typed != nil && typed.Name == config.PluginName {
-		return typed.Parameters
+		return typed.Parameters, true
 	}
 
 	var fallback struct {
@@ -332,28 +156,16 @@ func extractParameters(raw []byte, typed *cnpgv1.BackupPluginConfiguration) map[
 		} `json:"spec"`
 	}
 	if err := json.Unmarshal(raw, &fallback); err != nil {
-		return nil
+		return nil, false
 	}
 
 	pluginConfigs := []*cnpgv1.BackupPluginConfiguration{fallback.Spec.PluginConfiguration, fallback.Spec.Plugin}
 	for _, candidate := range pluginConfigs {
 		if candidate != nil && candidate.Name == config.PluginName {
-			return candidate.Parameters
+			return candidate.Parameters, true
 		}
 	}
-	return nil
-}
-
-func backupID(backup cnpgv1.Backup, now time.Time) string {
-	stamp := now.Format("20060102T150405Z")
-	if !backup.CreationTimestamp.IsZero() {
-		stamp = backup.CreationTimestamp.UTC().Format("20060102T150405Z")
-	}
-	name := strings.TrimSpace(backup.Name)
-	if name == "" {
-		name = "manual"
-	}
-	return name + "-" + stamp
+	return nil, false
 }
 
 func continueResult() *cnpgreconciler.ReconcilerHooksResult {
