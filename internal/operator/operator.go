@@ -3,12 +3,14 @@ package operator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 
 	cnpgv1 "github.com/cloudnative-pg/api/pkg/api/v1"
 	cnpgoperator "github.com/cloudnative-pg/cnpg-i/pkg/operator"
 	pgbackup "github.com/odit-services/cnpg-plugin-pgdump/internal/backup"
 	"github.com/odit-services/cnpg-plugin-pgdump/internal/config"
+	"github.com/odit-services/cnpg-plugin-pgdump/internal/lifecycle"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -44,17 +46,37 @@ func (s *Server) GetCapabilities(
 }
 
 func (s *Server) ValidateClusterCreate(
-	context.Context,
-	*cnpgoperator.OperatorValidateClusterCreateRequest,
+	_ context.Context,
+	request *cnpgoperator.OperatorValidateClusterCreateRequest,
 ) (*cnpgoperator.OperatorValidateClusterCreateResult, error) {
-	return &cnpgoperator.OperatorValidateClusterCreateResult{}, nil
+	validationErrors, err := validateCluster(request.GetDefinition())
+	return &cnpgoperator.OperatorValidateClusterCreateResult{ValidationErrors: validationErrors}, err
 }
 
 func (s *Server) ValidateClusterChange(
-	context.Context,
-	*cnpgoperator.OperatorValidateClusterChangeRequest,
+	_ context.Context,
+	request *cnpgoperator.OperatorValidateClusterChangeRequest,
 ) (*cnpgoperator.OperatorValidateClusterChangeResult, error) {
-	return &cnpgoperator.OperatorValidateClusterChangeResult{}, nil
+	validationErrors, err := validateCluster(request.GetNewCluster())
+	return &cnpgoperator.OperatorValidateClusterChangeResult{ValidationErrors: validationErrors}, err
+}
+
+// validateCluster checks the sidecar resource parameters of the plugin in the Cluster spec.
+func validateCluster(definition []byte) ([]*cnpgoperator.ValidationError, error) {
+	var cluster cnpgv1.Cluster
+	if err := json.Unmarshal(definition, &cluster); err != nil {
+		return nil, err
+	}
+	_, err := lifecycle.SidecarResources(nil, lifecycle.PluginParameters(cluster))
+	var parameterError *lifecycle.ParameterError
+	if errors.As(err, &parameterError) {
+		return []*cnpgoperator.ValidationError{{
+			PathComponents: []string{"spec", "plugins", config.PluginName, "parameters", parameterError.Parameter},
+			Value:          parameterError.Value,
+			Message:        parameterError.Error(),
+		}}, nil
+	}
+	return nil, err
 }
 
 func (s *Server) MutateCluster(

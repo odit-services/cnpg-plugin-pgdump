@@ -27,6 +27,9 @@ func New(version string) *cobra.Command {
 	identityServer := pgidentity.New(appConfig.Version)
 
 	cmd := pluginhttp.CreateMainCmd(identityServer, func(server *grpc.Server) error {
+		if _, err := pglifecycle.SidecarResources(appConfig.SidecarResources, nil); err != nil {
+			return fmt.Errorf("sidecar resources defaults: %w", err)
+		}
 		kube, dynamicClient, err := kubeClients()
 		if err != nil {
 			return err

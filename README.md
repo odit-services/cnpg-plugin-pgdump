@@ -311,6 +311,20 @@ Configuration can be set with flags or environment variables:
 - `PGDUMP_TIMEOUT`, default `12h`
 - `PGDUMP_WORKDIR`, default OS temp dir (`/work`, an `emptyDir`, in the sidecar)
 - `SIDECAR_IMAGE`, image of the backup sidecar injected in the PostgreSQL pods (no sidecar without it)
+- `SIDECAR_CPU_REQUEST`, `SIDECAR_MEMORY_REQUEST`, `SIDECAR_CPU_LIMIT`, `SIDECAR_MEMORY_LIMIT`, default requests and limits of the sidecar (none by default)
+
+A Cluster can override the sidecar requests and limits with the plugin parameters `sidecar_cpu_request`, `sidecar_memory_request`, `sidecar_cpu_limit` and `sidecar_memory_limit`, for example to keep the Guaranteed QoS class (requests equal to limits in every container):
+
+```yaml
+spec:
+  plugins:
+    - name: pgdump-backup.cloudnative-pg.io
+      parameters:
+        sidecar_cpu_request: "1"
+        sidecar_cpu_limit: "1"
+        sidecar_memory_request: 256Mi
+        sidecar_memory_limit: 256Mi
+```
 
 S3 configuration belongs to the `ScheduledBackup`. The plugin does not read S3 settings from Deployment environment variables.
 

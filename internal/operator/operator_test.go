@@ -56,3 +56,16 @@ func backup(name, cluster, plugin, phase, stoppedAt, size string) *unstructured.
 		},
 	}}
 }
+
+func TestValidateClusterRejectsInvalidSidecarResources(t *testing.T) {
+	server := New(nil)
+	result, err := server.ValidateClusterCreate(context.Background(), &cnpgoperator.OperatorValidateClusterCreateRequest{
+		Definition: []byte(`{"spec":{"plugins":[{"name":"` + config.PluginName + `","parameters":{"sidecar_memory_limit":"lots"}}]}}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.GetValidationErrors()) != 1 || result.GetValidationErrors()[0].GetValue() != "lots" {
+		t.Fatalf("validation errors %v", result.GetValidationErrors())
+	}
+}

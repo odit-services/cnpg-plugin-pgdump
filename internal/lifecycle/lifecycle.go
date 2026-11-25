@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 
 	cnpgv1 "github.com/cloudnative-pg/api/pkg/api/v1"
 	"github.com/cloudnative-pg/cnpg-i-machinery/pkg/pluginhelper/decoder"
@@ -13,6 +15,7 @@ import (
 	"github.com/cloudnative-pg/machinery/pkg/log"
 	"github.com/odit-services/cnpg-plugin-pgdump/internal/config"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/utils/ptr"
 )
 
@@ -79,7 +82,7 @@ func (s *Server) LifecycleHook(
 	}
 
 	mutated := pod.DeepCopy()
-	if err := InjectSidecar(&mutated.Spec, cluster, s.appConfig); err != nil {
+	if err := InjectSidecar(ctx, &mutated.Spec, cluster, s.appConfig); err != nil {
 		if errors.Is(err, object.ErrNoPostgresContainerFound) {
 			return &cnpglifecycle.OperatorLifecycleResponse{}, nil
 		}
@@ -94,7 +97,14 @@ func (s *Server) LifecycleHook(
 }
 
 // InjectSidecar adds the backup sidecar (native sidecar init container) and its volumes to an instance pod spec.
-func InjectSidecar(spec *corev1.PodSpec, cluster cnpgv1.Cluster, appConfig config.Config) error {
+// An existing sidecar is replaced, so that image and resources changes reach the pods.
+func InjectSidecar(ctx context.Context, spec *corev1.PodSpec, cluster cnpgv1.Cluster, appConfig config.Config) error {
+	// an invalid value must not prevent CNPG from creating the PostgreSQL pods: it is logged and ignored
+	resources, err := SidecarResources(appConfig.SidecarResources, PluginParameters(cluster))
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Ignoring invalid sidecar resources", "cluster", cluster.Name)
+	}
+
 	sidecar := corev1.Container{
 		Name:            SidecarName,
 		Image:           appConfig.SidecarImage,
@@ -108,6 +118,7 @@ func InjectSidecar(spec *corev1.PodSpec, cluster cnpgv1.Cluster, appConfig confi
 			{Name: pluginsVolumeName, MountPath: pluginsMountPath},
 			{Name: workVolumeName, MountPath: workMountPath},
 		},
+		Resources: resources,
 		SecurityContext: &corev1.SecurityContext{
 			AllowPrivilegeEscalation: ptr.To(false),
 			Privileged:               ptr.To(false),
@@ -118,6 +129,9 @@ func InjectSidecar(spec *corev1.PodSpec, cluster cnpgv1.Cluster, appConfig confi
 		},
 	}
 
+	spec.InitContainers = slices.DeleteFunc(spec.InitContainers, func(c corev1.Container) bool {
+		return c.Name == SidecarName
+	})
 	if err := object.InjectPluginInitContainerSidecarSpec(spec, &sidecar, false); err != nil {
 		return err
 	}
@@ -133,4 +147,60 @@ func InjectSidecar(spec *corev1.PodSpec, cluster cnpgv1.Cluster, appConfig confi
 		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 	})
 	return nil
+}
+
+// PluginParameters returns the parameters of the plugin in the Cluster spec.
+func PluginParameters(cluster cnpgv1.Cluster) map[string]string {
+	for _, plugin := range cluster.Spec.Plugins {
+		if plugin.Name == config.PluginName {
+			return plugin.Parameters
+		}
+	}
+	return nil
+}
+
+// ParameterError reports an invalid sidecar resource parameter.
+type ParameterError struct {
+	Parameter string
+	Value     string
+	Err       error
+}
+
+func (e *ParameterError) Error() string {
+	return fmt.Sprintf("invalid %s %q: %v", e.Parameter, e.Value, e.Err)
+}
+
+// SidecarResources returns the requests and limits of the sidecar: the plugin defaults overridden by the Cluster
+// plugin parameters (see config.SidecarResourceParameters). Invalid values are left out and reported in the error.
+func SidecarResources(defaults, parameters map[string]string) (corev1.ResourceRequirements, error) {
+	var resources corev1.ResourceRequirements
+	var errs []error
+	for _, item := range []struct {
+		parameter string
+		list      *corev1.ResourceList
+		name      corev1.ResourceName
+	}{
+		{"sidecar_cpu_request", &resources.Requests, corev1.ResourceCPU},
+		{"sidecar_memory_request", &resources.Requests, corev1.ResourceMemory},
+		{"sidecar_cpu_limit", &resources.Limits, corev1.ResourceCPU},
+		{"sidecar_memory_limit", &resources.Limits, corev1.ResourceMemory},
+	} {
+		value := parameters[item.parameter]
+		if value == "" {
+			value = defaults[item.parameter]
+		}
+		if value == "" {
+			continue
+		}
+		quantity, err := resource.ParseQuantity(value)
+		if err != nil {
+			errs = append(errs, &ParameterError{Parameter: item.parameter, Value: value, Err: err})
+			continue
+		}
+		if *item.list == nil {
+			*item.list = corev1.ResourceList{}
+		}
+		(*item.list)[item.name] = quantity
+	}
+	return resources, errors.Join(errs...)
 }
